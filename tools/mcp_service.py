@@ -731,6 +731,30 @@ async def python_exec(script: str) -> str:
                 "message": f"{type(e).__name__}: {str(e)}",
                 "fix_suggestion": "Unexpected error."
             }
+        except SystemExit as e:
+            # catch sys.exit()
+            output = sys.stdout.getvalue()
+            error = sys.stderr.getvalue()
+            return {
+                "success": False,
+                "output": output,
+                "error": error,
+                "error_type": "SystemExit",
+                "message": f"Script called sys.exit({e.code}); execution has been intercepted and the service remains running.",
+                "fix_suggestion": "Avoid using sys.exit() in your script. Consider using a return statement instead."
+            }
+        except BaseException as e:
+            # Last-resort catch
+            output = sys.stdout.getvalue()
+            error = sys.stderr.getvalue()
+            return {
+                "success": False,
+                "output": output,
+                "error": error,
+                "error_type": type(e).__name__,
+                "message": f"Caught BaseException: {e}",
+                "fix_suggestion": "Avoid using statements or calls that forcibly terminate the process."
+            }
         finally:
             sys.stdout = old_stdout
             sys.stderr = old_stderr
