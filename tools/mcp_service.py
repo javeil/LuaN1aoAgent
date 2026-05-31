@@ -22,6 +22,9 @@ import json
 import subprocess
 import time
 import logging
+import signal
+import tempfile
+import textwrap
 from typing import Dict, Any, List
 from http.server import BaseHTTPRequestHandler
 import sys
@@ -115,6 +118,89 @@ _httpx_client = httpx.AsyncClient(verify=False)  # 忽略SSL证书验证
 
 _THINK_HISTORY_LIMIT = 50
 _think_history: deque[Dict[str, Any]] = deque(maxlen=_THINK_HISTORY_LIMIT)
+
+_STREAM_CHUNK_SIZE = 4096
+_SHELL_OUTPUT_LIMIT = int(os.environ.get("MCP_SHELL_OUTPUT_LIMIT", 2 * 1024 * 1024))
+_SHELL_TIMEOUT = int(os.environ.get("MCP_SHELL_TIMEOUT", 300))
+_PYTHON_EXEC_OUTPUT_LIMIT = int(os.environ.get("MCP_PYTHON_EXEC_OUTPUT_LIMIT", 2 * 1024 * 1024))
+_PYTHON_EXEC_TIMEOUT = int(os.environ.get("MCP_PYTHON_EXEC_TIMEOUT", 180))
+
+
+async def _read_stream_limited(stream, limit: int):
+    """Read a subprocess stream by chunks so long lines cannot overflow asyncio's line limit."""
+    chunks = []
+    captured = 0
+    truncated = False
+
+    while True:
+        chunk = await stream.read(_STREAM_CHUNK_SIZE)
+        if not chunk:
+            break
+
+        remaining = limit - captured
+        if remaining > 0:
+            chunks.append(chunk[:remaining])
+            captured += min(len(chunk), remaining)
+            if len(chunk) > remaining:
+                truncated = True
+        else:
+            truncated = True
+
+    output = b"".join(chunks).decode("utf-8", errors="replace")
+    if truncated:
+        output += f"\n[output truncated after {limit} bytes]\n"
+    return output, truncated
+
+
+async def _wait_process(process, timeout: int):
+    if not timeout or timeout <= 0:
+        return await process.wait(), False
+
+    try:
+        return await asyncio.wait_for(process.wait(), timeout=timeout), False
+    except asyncio.TimeoutError:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except Exception:
+            process.terminate()
+
+        try:
+            await asyncio.wait_for(process.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except Exception:
+                process.kill()
+            await process.wait()
+        return process.returncode, True
+
+
+def _export_httpx_cookies():
+    cookies = []
+    cookie_iter = getattr(_httpx_client.cookies, "jar", _httpx_client.cookies)
+    for cookie in cookie_iter:
+        cookies.append(
+            {
+                "name": cookie.name,
+                "value": cookie.value,
+                "domain": getattr(cookie, "domain", None),
+                "path": getattr(cookie, "path", "/") or "/",
+            }
+        )
+    return cookies
+
+
+def _sync_httpx_cookies(cookies):
+    for cookie in cookies or []:
+        name = cookie.get("name")
+        value = cookie.get("value")
+        if not name or value is None:
+            continue
+
+        kwargs = {"path": cookie.get("path") or "/"}
+        if cookie.get("domain"):
+            kwargs["domain"] = cookie["domain"]
+        _httpx_client.cookies.set(name, value, **kwargs)
 
 
 @mcp.tool()
@@ -574,33 +660,38 @@ async def web_search(query: str, num_results: int = 5) -> str:
 
 
 @mcp.tool()
-async def shell_exec(command: str) -> str:
+async def shell_exec(command: str, timeout: int = _SHELL_TIMEOUT, max_output_bytes: int = _SHELL_OUTPUT_LIMIT) -> str:
     """
     Shell命令执行接口 (异步非阻塞)。实时将输出打印到终端。
     禁止执行mcp服务中已提供的工具，如dirsearch等
     :param command: 要执行的shell命令（如"ls -al"）
     :return: 命令输出结果
     """
-    output_lines = []
+    full_output = ""
     try:
         process = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT
+            stderr=asyncio.subprocess.STDOUT,
+            start_new_session=True,
         )
 
-        # Real-time output handling
-        while True:
-            line = await process.stdout.readline()
-            if not line:
-                break
-            # Decode bytes to string
-            decoded_line = line.decode('utf-8', errors='replace')
-            output_lines.append(decoded_line)
+        reader_task = asyncio.create_task(_read_stream_limited(process.stdout, max_output_bytes))
+        return_code, timed_out = await _wait_process(process, timeout)
+        full_output, output_truncated = await reader_task
 
-        return_code = await process.wait()
-
-        full_output = "".join(output_lines)
+        if timed_out:
+            return json.dumps(
+                {
+                    "success": False,
+                    "output": full_output,
+                    "output_truncated": output_truncated,
+                    "error_type": "TIMEOUT",
+                    "message": f"Command '{command}' timed out after {timeout} seconds.",
+                    "fix_suggestion": "Reduce the command scope, write bulky output to a file, or pass a larger timeout.",
+                },
+                ensure_ascii=False,
+            )
 
         if return_code != 0:
             error_message = f"Command '{command}' returned non-zero exit status {return_code}."
@@ -617,180 +708,221 @@ async def shell_exec(command: str) -> str:
                 {
                     "success": False,
                     "output": full_output,
+                    "output_truncated": output_truncated,
                     "error_type": error_type,
                     "message": error_message,
                     "fix_suggestion": fix_suggestion,
                 }
             )
 
-        return json.dumps({"success": True, "output": full_output, "error": ""})
+        return json.dumps(
+            {"success": True, "output": full_output, "output_truncated": output_truncated, "error": ""},
+            ensure_ascii=False,
+        )
 
     except Exception as e:
         # 增强错误输出，确保agent感知具体失败原因
         logger.exception(f"shell_exec执行失败: {e}")
         detailed_error = f"{type(e).__name__}: {str(e)}"
-        if not output_lines:
+        if not full_output:
             detailed_error += "; No output captured before exception."
         return json.dumps(
             {
                 "success": False,
-                "output": "".join(output_lines) if output_lines else "",
+                "output": full_output,
                 "error_type": "RUNTIME",
                 "message": detailed_error,
                 "fix_suggestion": "An unexpected error occurred during command execution. Check arguments, permissions, and environment.",
-            }
+            },
+            ensure_ascii=False,
         )
 
 
-# Concurrency lock for python_exec (sys.stdout patching is not thread-safe)
+# Concurrency lock keeps cookie sync deterministic. Script execution itself runs
+# in a subprocess so crashes and global monkey patches cannot poison this service.
 _python_exec_lock = asyncio.Lock()
 
 @mcp.tool()
-async def python_exec(script: str) -> str:
+async def python_exec(script: str, timeout: int = _PYTHON_EXEC_TIMEOUT, max_output_bytes: int = _PYTHON_EXEC_OUTPUT_LIMIT) -> str:
     """
     Python脚本执行接口 (异步非阻塞).
-    此工具现在运行在独立线程中，不会阻塞主服务，允许你在运行长时间计算时保持系统响应。
+    此工具运行在独立子进程中，不会污染或终止MCP服务进程。
     **警告：请勿使用此工具直接发送HTTP请求！** 对于所有网络请求，请务必使用 `http_request` 工具。
     **⚠️请注意需要显式设置之前工具、会话获取的cookie、session**
     :param script: 要执行的Python代码字符串。确保代码是自包含的，并通过 `print()` 输出结果。
     :return: 执行输出结果
     """
-    import io
-
-    # 定义同步执行函数
-    def _run_script():
-        old_stdout = sys.stdout
-        old_stderr = sys.stderr
-        sys.stdout = io.StringIO()
-        sys.stderr = io.StringIO()
-        try:
-            # 1. Extract cookies from the shared httpx client
-            session_cookies = _httpx_client.cookies
-
-            # 2. Prepare the sandbox environment
-            sandbox_session = requests.Session()
-            try:
-                # Build a de-duplicated cookie jar to avoid "Multiple cookies exist" errors
-                jar = requests.cookies.RequestsCookieJar()
-                cookie_iter = getattr(session_cookies, "jar", session_cookies)
-                for cookie in cookie_iter:
-                    jar.set(
-                        cookie.name,
-                        cookie.value,
-                        domain=getattr(cookie, "domain", None),
-                        path=getattr(cookie, "path", None),
-                    )
-                sandbox_session.cookies = jar
-            except Exception as cookie_error:
-                # If inheritance fails, continue with empty session without polluting tool output
-                logger.warning(f"python_exec cookie inheritance skipped: {cookie_error}")
-
-            global_scope = {
-                "requests": requests,
-                "session": sandbox_session,
-                "json": json,
-            }
-
-            compile(script, "<string>", "exec")
-            exec(script, global_scope)
-            output = sys.stdout.getvalue()
-            error = sys.stderr.getvalue()
-            
-            # Capture cookies to return
-            captured_cookies = sandbox_session.cookies
-            
-            return {
-                "success": True, 
-                "output": output, 
-                "error": error,
-                "cookies": captured_cookies
-            }
-        except SyntaxError as e:
-            return {
-                "success": False, 
-                "error_type": "SYNTAX", 
-                "message": f"Python Syntax Error: {e}",
-                "fix_suggestion": "Review the Python code for syntax errors."
-            }
-        except ImportError as e:
-             return {
-                "success": False,
-                "output": sys.stdout.getvalue(),
-                "error_type": "IMPORT",
-                "message": f"Import Error: {e}",
-                "fix_suggestion": "Check modules."
-            }
-        except Exception as e:
-            output = sys.stdout.getvalue()
-            error = sys.stderr.getvalue()
-            return {
-                "success": False,
-                "output": output,
-                "error": error,
-                "error_type": "RUNTIME",
-                "message": f"{type(e).__name__}: {str(e)}",
-                "fix_suggestion": "Unexpected error."
-            }
-        except SystemExit as e:
-            # catch sys.exit()
-            output = sys.stdout.getvalue()
-            error = sys.stderr.getvalue()
-            return {
-                "success": False,
-                "output": output,
-                "error": error,
-                "error_type": "SystemExit",
-                "message": f"Script called sys.exit({e.code}); execution has been intercepted and the service remains running.",
-                "fix_suggestion": "Avoid using sys.exit() in your script. Consider using a return statement instead."
-            }
-        except BaseException as e:
-            # Last-resort catch
-            output = sys.stdout.getvalue()
-            error = sys.stderr.getvalue()
-            return {
-                "success": False,
-                "output": output,
-                "error": error,
-                "error_type": type(e).__name__,
-                "message": f"Caught BaseException: {e}",
-                "fix_suggestion": "Avoid using statements or calls that forcibly terminate the process."
-            }
-        finally:
-            sys.stdout = old_stdout
-            sys.stderr = old_stderr
-
-    # 在线程池中执行
-    loop = asyncio.get_running_loop()
     try:
-        # Serialize execution to prevent sys.stdout conflict
         async with _python_exec_lock:
-            result = await loop.run_in_executor(None, _run_script)
-        
-        # [Sync Back Logic]
-        # 如果脚本中修改了 session.cookies，尝试将其同步回全局 httpx client
-        # 注意：这里我们假设 python_exec 是同步执行的，因此此时 sandbox_session 可能已经发生变化
-        # 但这就需要 _run_script 返回 session 对象或者 extract cookie
-        # 修改 _run_script 返回值包含 cookies 是最好的方法
-        
-        # Wait, _run_script returns a dict with 'output' etc.
-        # We need to capture the cookies INSIDE _run_script and return them.
-        
-        # Let's verify if the edit below handles this correctly.
-        # Check carefully.
-        
-        # Actually, since _run_script is a closure, and _httpx_client is global...
-        # But _httpx_client is NOT thread-safe for mutation concurrent with reads?
-        # It's better to return cookies in the result dict and update in the main thread (async loop).
-        
-        if result.get("success") and "cookies" in result:
-             # Sync back cookies from script execution to global client
-             new_cookies = result.pop("cookies") # remove from output
-             _httpx_client.cookies.update(new_cookies)
-             
-        return json.dumps(result, ensure_ascii=False)
+            with tempfile.TemporaryDirectory(prefix="luan1ao-python-exec-") as tmpdir:
+                script_path = os.path.join(tmpdir, "user_script.py")
+                wrapper_path = os.path.join(tmpdir, "runner.py")
+                cookies_in_path = os.path.join(tmpdir, "cookies_in.json")
+                result_path = os.path.join(tmpdir, "result.json")
+
+                with open(script_path, "w", encoding="utf-8") as f:
+                    f.write(script)
+                with open(cookies_in_path, "w", encoding="utf-8") as f:
+                    json.dump(_export_httpx_cookies(), f, ensure_ascii=False)
+                with open(wrapper_path, "w", encoding="utf-8") as f:
+                    f.write(
+                        textwrap.dedent(
+                            r"""
+                            import json
+                            import sys
+                            import requests
+
+                            script_path, cookies_in_path, result_path = sys.argv[1:4]
+                            sandbox_session = requests.Session()
+
+                            def _load_cookies():
+                                try:
+                                    with open(cookies_in_path, "r", encoding="utf-8") as f:
+                                        cookies = json.load(f)
+                                except Exception:
+                                    return
+
+                                jar = requests.cookies.RequestsCookieJar()
+                                for cookie in cookies:
+                                    name = cookie.get("name")
+                                    value = cookie.get("value")
+                                    if not name or value is None:
+                                        continue
+                                    kwargs = {"path": cookie.get("path") or "/"}
+                                    if cookie.get("domain"):
+                                        kwargs["domain"] = cookie["domain"]
+                                    jar.set(name, value, **kwargs)
+                                sandbox_session.cookies = jar
+
+                            def _dump_cookies():
+                                return [
+                                    {
+                                        "name": cookie.name,
+                                        "value": cookie.value,
+                                        "domain": getattr(cookie, "domain", None),
+                                        "path": getattr(cookie, "path", "/") or "/",
+                                    }
+                                    for cookie in sandbox_session.cookies
+                                ]
+
+                            def _write_result(result):
+                                result["cookies"] = _dump_cookies()
+                                with open(result_path, "w", encoding="utf-8") as f:
+                                    json.dump(result, f, ensure_ascii=False)
+
+                            _load_cookies()
+                            globals_for_script = {
+                                "requests": requests,
+                                "session": sandbox_session,
+                                "json": json,
+                            }
+
+                            try:
+                                with open(script_path, "r", encoding="utf-8") as f:
+                                    source = f.read()
+                                code = compile(source, "<python_exec>", "exec")
+                                exec(code, globals_for_script)
+                                _write_result({"success": True})
+                            except SyntaxError as e:
+                                _write_result({
+                                    "success": False,
+                                    "error_type": "SYNTAX",
+                                    "message": f"Python Syntax Error: {e}",
+                                    "fix_suggestion": "Review the Python code for syntax errors.",
+                                })
+                            except ImportError as e:
+                                _write_result({
+                                    "success": False,
+                                    "error_type": "IMPORT",
+                                    "message": f"Import Error: {e}",
+                                    "fix_suggestion": "Check modules and install missing dependencies.",
+                                })
+                            except SystemExit as e:
+                                _write_result({
+                                    "success": False,
+                                    "error_type": "SystemExit",
+                                    "message": f"Script called sys.exit({e.code}); execution has been isolated in a subprocess.",
+                                    "fix_suggestion": "Avoid using sys.exit() in python_exec scripts.",
+                                })
+                            except BaseException as e:
+                                _write_result({
+                                    "success": False,
+                                    "error_type": type(e).__name__ if type(e).__name__ else "RUNTIME",
+                                    "message": f"{type(e).__name__}: {e}",
+                                    "fix_suggestion": "Unexpected error in the submitted Python script.",
+                                })
+                            """
+                        ).lstrip()
+                    )
+
+                process = await asyncio.create_subprocess_exec(
+                    sys.executable,
+                    wrapper_path,
+                    script_path,
+                    cookies_in_path,
+                    result_path,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=os.getcwd(),
+                    start_new_session=True,
+                )
+
+                stdout_task = asyncio.create_task(_read_stream_limited(process.stdout, max_output_bytes))
+                stderr_task = asyncio.create_task(_read_stream_limited(process.stderr, max_output_bytes))
+                return_code, timed_out = await _wait_process(process, timeout)
+                output, output_truncated = await stdout_task
+                error, error_truncated = await stderr_task
+
+                if timed_out:
+                    return json.dumps(
+                        {
+                            "success": False,
+                            "output": output,
+                            "error": error,
+                            "output_truncated": output_truncated,
+                            "error_truncated": error_truncated,
+                            "error_type": "TIMEOUT",
+                            "message": f"Python script timed out after {timeout} seconds.",
+                            "fix_suggestion": "Reduce the script scope or pass a larger timeout.",
+                        },
+                        ensure_ascii=False,
+                    )
+
+                result = {
+                    "success": return_code == 0,
+                    "output": output,
+                    "error": error,
+                    "output_truncated": output_truncated,
+                    "error_truncated": error_truncated,
+                }
+
+                if os.path.exists(result_path):
+                    with open(result_path, "r", encoding="utf-8") as f:
+                        child_result = json.load(f)
+                    result.update({k: v for k, v in child_result.items() if k != "cookies"})
+                    if result.get("success"):
+                        _sync_httpx_cookies(child_result.get("cookies", []))
+                elif return_code != 0:
+                    result.update(
+                        {
+                            "error_type": "PROCESS_ERROR",
+                            "message": f"Python subprocess exited with status {return_code} before writing a result.",
+                            "fix_suggestion": "Check stderr for interpreter startup errors or fatal crashes.",
+                        }
+                    )
+
+                return json.dumps(result, ensure_ascii=False)
     except Exception as e:
-         logger.exception("python_exec thread execution failed")
-         return json.dumps({"success": False, "error": f"Thread Error: {str(e)}"}, ensure_ascii=False)
+         logger.exception("python_exec subprocess execution failed")
+         return json.dumps(
+             {
+                 "success": False,
+                 "error_type": "RUNTIME",
+                 "message": f"{type(e).__name__}: {str(e)}",
+                 "fix_suggestion": "Unexpected error while preparing or running the Python subprocess.",
+             },
+             ensure_ascii=False,
+         )
 
 
 
