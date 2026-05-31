@@ -149,6 +149,8 @@ class LLMClient:
         elif other_messages[0]["role"] != "user":
             other_messages.insert(0, {"role": "user", "content": "Continue."})
 
+        headers["anthropic-beta"] = "prompt-caching-2024-07-31"
+
         payload = {
             "model": model_name,
             "max_tokens": 4096,
@@ -156,7 +158,14 @@ class LLMClient:
             "messages": other_messages,
         }
         if system_message:
-            payload["system"] = system_message
+            # 将 system prompt 标记为可缓存 (ephemeral), 多轮调用复用同一前缀以省 token
+            payload["system"] = [
+                {
+                    "type": "text",
+                    "text": system_message,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
 
         return headers, payload
 
@@ -384,12 +393,13 @@ class LLMClient:
                 self._get_console().print(
                     f"[bold yellow]警告：LLM返回的JSON格式无效，正在尝试第 {json_parsing_retries}/{MAX_JSON_PARSE_RETRIES} 次重试...[/bold yellow]"
                 )
-                current_messages.append(
-                    {
-                        "role": "user",
-                        "content": "Your previous response was not valid JSON. Please correct the format and provide the full response again, ensuring it is a single, valid JSON object.",
-                    }
+                correction_prompt = (
+                    "Your previous response was not valid JSON. Please correct the format and provide "
+                    "the full response again, ensuring it is a single, valid JSON object."
                 )
+                # 避免多次重试时纠错消息堆叠膨胀 prompt: 已存在则不重复追加
+                if not (current_messages and current_messages[-1].get("content") == correction_prompt):
+                    current_messages.append({"role": "user", "content": correction_prompt})
                 await asyncio.sleep(1)
 
             except Exception as e:

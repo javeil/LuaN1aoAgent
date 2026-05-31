@@ -233,6 +233,15 @@ WEB_HOST = os.getenv("WEB_HOST", "127.0.0.1")
 # Web UI 服务端口
 WEB_PORT = int(os.getenv("WEB_PORT", "8088"))
 
+# Web 鉴权 (可选): 设置 WEB_API_KEY 后, 所有 /api/* 请求须携带 X-API-Key 头
+# (或 ?api_key= 查询参数, 供 EventSource 等无法设头的场景使用)。留空 = 不鉴权 (默认本机使用)
+WEB_API_KEY = os.getenv("WEB_API_KEY", "")
+
+# CORS 允许来源, 逗号分隔; 默认仅本机。设为 "*" 放开 (公网部署不建议)
+WEB_CORS_ORIGINS = os.getenv(
+    "WEB_CORS_ORIGINS", "http://localhost,http://127.0.0.1"
+)
+
 # ============================================================================
 # 知识服务配置
 # ============================================================================

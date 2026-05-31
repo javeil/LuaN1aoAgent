@@ -28,7 +28,7 @@ from core.database.utils import (
 )
 from core.database.models import SessionModel, GraphNodeModel, GraphEdgeModel, EventLogModel, InterventionModel
 from core.intervention import intervention_manager # Added this line
-from conf.config import WEB_HOST, WEB_PORT
+from conf.config import WEB_HOST, WEB_PORT, WEB_API_KEY, WEB_CORS_ORIGINS
 
 # 配置 SSE 日志
 _sse_logger = logging.getLogger("web.sse")
@@ -36,16 +36,35 @@ _sse_logger = logging.getLogger("web.sse")
 # 进程跟踪字典: {op_id -> subprocess.Popen}
 # 用于在终止任务时直接kill进程
 _running_processes: Dict[str, subprocess.Popen] = {}
+# 保护 _running_processes 的并发访问 (create / abort 可能并发)
+_processes_lock = asyncio.Lock()
 
 app = FastAPI(title="鸾鸟自主渗透系统 Web (DB Mode)")
 
+# CORS 来源可配置; 默认仅本机, 避免任意网页 CSRF 触发渗透操作
+_cors_origins = (
+    ["*"]
+    if WEB_CORS_ORIGINS.strip() == "*"
+    else [o.strip() for o in WEB_CORS_ORIGINS.split(",") if o.strip()]
+)
+# allow_credentials=True 与通配 origin 不被浏览器接受, 放开时关闭凭据
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_origins != ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _api_key_auth(request: Request, call_next):
+    """可选鉴权: 设置 WEB_API_KEY 后, 对 /api/* 校验 X-API-Key 头或 api_key 查询参数。"""
+    if WEB_API_KEY and request.url.path.startswith("/api/"):
+        provided = request.headers.get("X-API-Key") or request.query_params.get("api_key")
+        if provided != WEB_API_KEY:
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+    return await call_next(request)
 
 # Mount static files and templates
 os.makedirs("web/static", exist_ok=True)
@@ -445,8 +464,9 @@ async def api_ops_abort(op_id: str):
     # 由于进程以 start_new_session=True 启动，Agent 及其所有子进程（MCP工具等）
     # 都在同一个独立进程组中，使用 os.killpg + SIGKILL 可以一次性全部终止
     process_killed = False
-    if op_id in _running_processes:
-        proc = _running_processes[op_id]
+    async with _processes_lock:
+        proc = _running_processes.pop(op_id, None)
+    if proc is not None:
         try:
             if proc.poll() is None:
                 try:
@@ -463,8 +483,6 @@ async def api_ops_abort(op_id: str):
                 _sse_logger.info(f"Process for op_id '{op_id}' already exited")
         except Exception as e:
             _sse_logger.error(f"Failed to kill process for op_id '{op_id}': {e}")
-        finally:
-            del _running_processes[op_id]
     else:
         _sse_logger.warning(f"No tracked process found for op_id '{op_id}'")
         
@@ -726,7 +744,8 @@ async def api_ops_create(payload: Dict[str, Any]):
                                    env=env)  # 传递环境变量
         
         # 保存进程引用到跟踪字典，以便后续可以直接kill
-        _running_processes[op_id] = process
+        async with _processes_lock:
+            _running_processes[op_id] = process
         
         _sse_logger.info(f"Agent task '{task_name}' (op_id: {op_id}) started with PID: {process.pid}, HITL: {human_in_the_loop}")
 
