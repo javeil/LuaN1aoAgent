@@ -8,15 +8,15 @@
 - get_all_tools_detailed_async(): 异步获取所有工具详情
 """
 
-import json
 import asyncio
+import json
 import os
-from typing import Any, Dict, Optional, List
+from typing import Any
 
 # 兼容环境：如果未安装 mcp 库，降级为占位实现并返回友好错误
 try:
     from mcp import ClientSession
-    from mcp.client.stdio import stdio_client, StdioServerParameters
+    from mcp.client.stdio import StdioServerParameters, stdio_client
 except Exception:
     ClientSession = None
     stdio_client = None
@@ -26,11 +26,11 @@ except Exception:
 class PersistentSession:
     """维护单个服务器的持久化异步 ClientSession，对外暴露异步调用接口"""
 
-    def __init__(self, name: str, server_config: Dict[str, Any]):
+    def __init__(self, name: str, server_config: dict[str, Any]):
         self.name = name
         self.config = server_config
         self._lock = asyncio.Lock()
-        self._session: Optional[ClientSession] = None
+        self._session: ClientSession | None = None
         self._task = None
         self._ready_event = asyncio.Event()
         self._stop_event = asyncio.Event()
@@ -43,14 +43,14 @@ class PersistentSession:
         cmd = self.config.get("command")
         args = self.config.get("args", [])
         env = {**os.environ, **self.config.get("env", {})}
-        
+
         try:
             async with stdio_client(StdioServerParameters(command=cmd, args=args, env=env)) as (read, write):
                 async with ClientSession(read, write) as session:
                     self._session = session
                     await self._session.initialize()
                     self._ready_event.set()
-                    
+
                     # 等待停止信号
                     await self._stop_event.wait()
         except Exception as e:
@@ -62,20 +62,20 @@ class PersistentSession:
     async def _connect(self):
         if self._session is not None:
             return
-            
+
         if ClientSession is None or stdio_client is None:
             raise RuntimeError("MCP Python SDK 未安装。请在 auto_pentest 环境中执行: pip install mcp")
-            
+
         self._stop_event.clear()
         self._task = asyncio.create_task(self._run_session())
-        
+
         # 等待会话就绪或任务失败
         wait_task = asyncio.create_task(self._ready_event.wait())
         done, pending = await asyncio.wait(
-            [wait_task, self._task], 
+            [wait_task, self._task],
             return_when=asyncio.FIRST_COMPLETED
         )
-        
+
         if self._task in done:
             # 任务提前结束（出错）
             if not wait_task.done():
@@ -132,7 +132,7 @@ class PersistentSession:
         except Exception:
             return []
 
-    async def call_tool(self, tool_name: str, arguments: Dict[str, Any]):
+    async def call_tool(self, tool_name: str, arguments: dict[str, Any]):
         try:
             await self.ensure_connected()
             result = await self._session.call_tool(tool_name, arguments=arguments)
@@ -140,15 +140,14 @@ class PersistentSession:
                 content = result.content[0]
                 if hasattr(content, "text"):
                     return content.text
-                else:
-                    return str(content)
+                return str(content)
             return ""
         except Exception as e:
             return json.dumps({"success": False, "error": f"MCP调用失败或SDK缺失: {str(e)}"}, ensure_ascii=False)
 
 
 # 全局原生异步会话存储
-_async_sessions: Dict[str, PersistentSession] = {}
+_async_sessions: dict[str, PersistentSession] = {}
 _sessions_initialized = False
 
 
@@ -160,7 +159,7 @@ async def initialize_sessions():
 
     config = {}
     if os.path.exists("mcp.json"):
-        with open("mcp.json", "r") as f:
+        with open("mcp.json") as f:
             config = json.load(f)
 
     for name, cfg in config.get("mcpServers", {}).items():
@@ -179,7 +178,7 @@ async def reload_sessions():
     await initialize_sessions()
 
 
-async def call_mcp_tool_async(tool: str, params: Optional[Dict] = None, server_name: Optional[str] = None) -> str:
+async def call_mcp_tool_async(tool: str, params: dict | None = None, server_name: str | None = None) -> str:
     """异步调用MCP工具。"""
     await initialize_sessions()
 
@@ -196,7 +195,7 @@ async def call_mcp_tool_async(tool: str, params: Optional[Dict] = None, server_n
                     break
             except Exception:
                 continue
-        
+
         if server_name is None:
             available_servers = list(_async_sessions.keys())
             error_payload = {
@@ -219,18 +218,18 @@ async def call_mcp_tool_async(tool: str, params: Optional[Dict] = None, server_n
         return json.dumps(error_payload, ensure_ascii=False)
 
 
-async def get_all_tools_detailed_async() -> Dict[str, Any]:
+async def get_all_tools_detailed_async() -> dict[str, Any]:
     """异步获取所有服务器的工具详情。"""
     await initialize_sessions()
     all_tools = {}
-    
+
     for name, session in _async_sessions.items():
         try:
             tools = await session.get_tools_detailed()
             all_tools[name] = tools
         except Exception as e:
             all_tools[name] = {"error": str(e)}
-            
+
     return all_tools
 
 

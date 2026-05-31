@@ -2,16 +2,15 @@
 import asyncio
 import json
 import os
-import time
 import tempfile
-from typing import Dict, Any
-
-from conf.i18n import t
+import time
+from typing import Any
 
 import httpx
 from rich.errors import MarkupError
 from rich.panel import Panel
 
+from conf.i18n import t
 from core.console import sanitize_for_rich
 
 
@@ -19,25 +18,25 @@ def _get_console():
     """Lazy initialization of console to avoid circular imports."""
     from core.console import console_proxy
     return console_proxy
+from conf.config import (
+    EXECUTOR_COMPRESS_INTERVAL,
+    EXECUTOR_COMPRESS_INTERVAL_MSG_THRESHOLD,
+    EXECUTOR_FAILURE_THRESHOLD,
+    EXECUTOR_MAX_OUTPUT_LENGTH,
+    EXECUTOR_MAX_STEPS,
+    EXECUTOR_MESSAGE_COMPRESS_THRESHOLD,
+    EXECUTOR_MIN_COMPRESS_MESSAGES,
+    EXECUTOR_NO_ARTIFACTS_PATIENCE,
+    EXECUTOR_RECENT_MESSAGES_KEEP,
+    EXECUTOR_TOKEN_COMPRESS_THRESHOLD,
+    EXECUTOR_TOOL_TIMEOUT,
+    TOOL_TIMEOUTS,
+)
 from core.events import broker
 from core.graph_manager import GraphManager
 from core.prompts import PromptManager
 from llm.llm_client import LLMClient
 from tools.mcp_client import call_mcp_tool_async
-from conf.config import (
-    EXECUTOR_MAX_STEPS,
-    EXECUTOR_MESSAGE_COMPRESS_THRESHOLD,
-    EXECUTOR_TOKEN_COMPRESS_THRESHOLD,
-    EXECUTOR_NO_ARTIFACTS_PATIENCE,
-    EXECUTOR_FAILURE_THRESHOLD,
-    EXECUTOR_RECENT_MESSAGES_KEEP,
-    EXECUTOR_MIN_COMPRESS_MESSAGES,
-    EXECUTOR_COMPRESS_INTERVAL,
-    EXECUTOR_COMPRESS_INTERVAL_MSG_THRESHOLD,
-    EXECUTOR_TOOL_TIMEOUT,
-    EXECUTOR_MAX_OUTPUT_LENGTH,
-    TOOL_TIMEOUTS,
-)
 
 
 async def _execute_with_retry(func, *args, max_retries: int = 3, delay: int = 5, **kwargs):
@@ -315,7 +314,7 @@ def _update_previous_steps_status(
             # Normalize 'executed' to 'completed' for frontend compatibility
             if status == "executed":
                 status = "completed"
-            
+
             if status in ["completed", "failed"]:
                 graph_manager.update_node(step_id, {"status": status})
             else:
@@ -524,15 +523,16 @@ async def run_executor_cycle(
             - status (str): 执行结果状态（success/aborted_by_halt_signal等）
             - cycle_metrics (dict): 执行周期指标字典
     """
-    from rich.panel import Panel
     from collections import defaultdict
+
+    from rich.panel import Panel
 
     messages = graph_manager.get_subtask_conversation_history(subtask_id)
 
     # 初始化本周期的指标
     cycle_metrics = {"prompt_tokens": 0, "completion_tokens": 0, "cost_cny": 0, "tool_calls": defaultdict(int)}
 
-    def update_cycle_metrics(call_metrics: Dict[str, Any]) -> None:
+    def update_cycle_metrics(call_metrics: dict[str, Any]) -> None:
         """
         更新执行周期指标。
 
@@ -612,7 +612,7 @@ async def run_executor_cycle(
             llm_reply_json, messages = await _call_llm_and_parse_response(
                 llm, messages, update_cycle_metrics, subtask_id, console_output_path, output_mode=output_mode
             )
-        except RuntimeError as e:
+        except RuntimeError:
             return (subtask_id, "error", cycle_metrics)
 
         # 更新上一步状态
@@ -716,14 +716,14 @@ async def run_executor_cycle(
             if not step_id or step_id == "None":
                 _get_console().print(f"⚠️ 跳过无效EXECUTE_NOW操作（缺少node_id）: {op}", style="yellow")
                 continue
-            
+
             # Ensure step_id is globally unique by prepending subtask_id
             # This is crucial to prevent node_id collisions across different subtasks
             original_step_id = step_id
             step_id = f"{subtask_id}_{original_step_id}"
 
             current_cycle_step_ids.append(step_id)
-            
+
             parent_id = op.get("parent_id") or potential_parent
             if not graph_manager._is_valid_parent_for_subtask(parent_id, subtask_id):
                 parent_id = potential_parent
@@ -739,7 +739,7 @@ async def run_executor_cycle(
                     action = json.loads(action)
                 except (json.JSONDecodeError, TypeError):
                     action = {"tool": str(action)}
-            
+
             # Add execution step to graph
             graph_manager.add_execution_step(
                 step_id, parent_id, thought, action, "in_progress", hypothesis_update=hypothesis_update
@@ -752,12 +752,12 @@ async def run_executor_cycle(
                 )
             except Exception:
                 pass
-            
+
             tool_name = action.get("tool") or action.get("name") or "unknown_tool"
             tool_params = action.get("params") or action.get("arguments") or {}
-            
+
             cycle_metrics["tool_calls"][tool_name] += 1
-            
+
             _get_console().print(
                 Panel(
                     f"准备并行执行动作: {tool_name}\n参数: {json.dumps(tool_params, ensure_ascii=False)}",
@@ -765,7 +765,7 @@ async def run_executor_cycle(
                     style="magenta",
                 )
             )
-            
+
             execution_tasks.append(
                 asyncio.wait_for(
                     _handle_local_tool(tool_name, tool_params, graph_manager)
@@ -780,15 +780,15 @@ async def run_executor_cycle(
             metrics_path = os.path.join(log_dir, "metrics.json")
             try:
                 if os.path.exists(metrics_path):
-                    with open(metrics_path, "r", encoding="utf-8") as f:
+                    with open(metrics_path, encoding="utf-8") as f:
                         current_metrics = json.load(f)
                 else:
                     current_metrics = {}
-                
+
                 current_metrics.setdefault("tool_calls", {})
                 for tool, count in cycle_metrics["tool_calls"].items():
                     current_metrics["tool_calls"][tool] = current_metrics["tool_calls"].get(tool, 0) + count
-                    
+
                 with open(metrics_path, "w", encoding="utf-8") as f:
                     json.dump(current_metrics, f, ensure_ascii=False, indent=2)
             except Exception:
@@ -812,7 +812,7 @@ async def run_executor_cycle(
                 step_id = last_step_ids[i]
                 tool_name = current_step_ops[i].get("action", {}).get("tool", "unknown_tool")
                 step_status = "completed"
-                
+
                 # Handle errors
                 if isinstance(result, Exception):
                     result_str = f"Error executing tool: {result}"
@@ -846,14 +846,14 @@ async def run_executor_cycle(
                     was_truncated = True
                     _get_console().print(Panel(f"⚠️ 动作 {step_id} 结果过长已截断", title="警告", style="yellow"))
                     truncated_steps.append({
-                        "step_id": step_id, 
-                        "tool_name": tool_name, 
+                        "step_id": step_id,
+                        "tool_name": tool_name,
                         "original_length": original_length,
                         "sent_length": MAX_OBSERVATION_LENGTH
                     })
 
                 observations.append(f"动作 {step_id} (工具={tool_name}) 的结果: {result_str}")
-                
+
                 # Update graph and logs
                 graph_manager.update_node(
                     step_id,
@@ -878,7 +878,7 @@ async def run_executor_cycle(
                             )
                     except Exception:
                         pass
-                
+
                 try:
                     run_log_entry = {
                         "event": "executor_step_completed",
@@ -893,7 +893,7 @@ async def run_executor_cycle(
 
             # Handle immediate corrections
             if has_correctable_error:
-                correction_prompt = f"检测到工具调用错误，请立即修正:\n" + "\n".join(correction_feedback)
+                correction_prompt = "检测到工具调用错误，请立即修正:\n" + "\n".join(correction_feedback)
                 _get_console().print(Panel(correction_prompt, title="🤖 Executor: 请求修正", style="bold yellow"))
                 messages.append({"role": "user", "content": correction_prompt})
                 continue
@@ -959,7 +959,7 @@ async def run_executor_cycle(
         halt_file = os.path.join(tempfile.gettempdir(), f"{graph_manager.task_id}.halt")
         if os.path.exists(halt_file):
             try:
-                with open(halt_file, "r", encoding="utf-8") as f:
+                with open(halt_file, encoding="utf-8") as f:
                     halt_payload = json.load(f) # Read payload to include in metrics if needed
                 _get_console().print(
                     Panel(
@@ -984,14 +984,14 @@ async def run_executor_cycle(
             metrics_path = os.path.join(log_dir, "metrics.json")
             try:
                 if os.path.exists(metrics_path):
-                    with open(metrics_path, "r", encoding="utf-8") as f:
+                    with open(metrics_path, encoding="utf-8") as f:
                         metrics = json.load(f)
                 else:
                     metrics = {}
-                
+
                 # 直接设置执行步数（不累加）
                 metrics["execution_steps"] = executed_steps_count
-                
+
                 # 实时更新tool_calls（使用cycle_metrics中的累计值）
                 if "tool_calls" not in metrics:
                     metrics["tool_calls"] = {}
@@ -1000,7 +1000,7 @@ async def run_executor_cycle(
                     metrics["cost_cny"] = 0
                 metrics["cost_cny"] = max(metrics.get("cost_cny", 0), cycle_metrics.get("cost_cny", 0))
                 metrics["total_tokens"] = cycle_metrics.get("prompt_tokens", 0) + cycle_metrics.get("completion_tokens", 0)
-                
+
                 # Atomic write
                 tmp_path = metrics_path + ".tmp"
                 with open(tmp_path, "w", encoding="utf-8") as f:

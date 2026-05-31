@@ -2,9 +2,7 @@
 
 import json
 from datetime import datetime
-from typing import List, Dict, Any, Optional
-
-
+from typing import Any
 
 
 def _get_console():
@@ -40,7 +38,7 @@ class Planner:
         self._last_dynamic_prompt = None
         self._last_dynamic_response = None
 
-    def set_log_dir(self, log_dir: Optional[str]) -> None:
+    def set_log_dir(self, log_dir: str | None) -> None:
         """
         设置日志目录路径。
 
@@ -346,11 +344,11 @@ class Planner:
 
         return "\n".join(summary) if summary else "LLM推理记录详情待完善"
 
-    def _write_run_log(self, plan_data: Dict | None) -> None:
+    def _write_run_log(self, plan_data: dict | None) -> None:
         if not getattr(self, "_run_log_path", None):
             return
-        import time
         import os
+        import time
         log_entry = {
             "event": "planner_completed",
             "plan": plan_data if isinstance(plan_data, dict) else {},
@@ -358,7 +356,7 @@ class Planner:
         }
         try:
             if os.path.exists(self._run_log_path):
-                with open(self._run_log_path, "r", encoding="utf-8") as f:
+                with open(self._run_log_path, encoding="utf-8") as f:
                     old_log = json.load(f)
             else:
                 old_log = []
@@ -369,7 +367,7 @@ class Planner:
             pass
 
 
-    async def _emit_planning_completed(self, plan_data: Dict | None) -> None:
+    async def _emit_planning_completed(self, plan_data: dict | None) -> None:
         try:
             import os
             op_id = os.path.basename(self._log_dir) if getattr(self, "_log_dir", None) else None
@@ -387,17 +385,17 @@ class Planner:
 
 
     def _sanitize_graph_operations(
-        self, ops: List[Dict], completed_node_ids: set = None
-    ) -> List[Dict]:
+        self, ops: list[dict], completed_node_ids: set = None
+    ) -> list[dict]:
         """
         净化图操作指令：去重 ADD_NODE，代码层保护 completed 节点不被修改状态。
         违规的 UPDATE_NODE 操作不静默丢弃，而是记录警告并跳过，
         调用方可将警告注入下一轮 LLM 上下文实现可见反馈。
         """
-        sanitized: List[Dict] = []
+        sanitized: list[dict] = []
         seen_add_ids: set = set()
         protected_ids: set = completed_node_ids or set()
-        self._last_sanitize_warnings: List[Dict] = []  # 供调用方读取，注入 LLM 反馈
+        self._last_sanitize_warnings: list[dict] = []  # 供调用方读取，注入 LLM 反馈
 
         for op in ops:
             cmd = op.get("command")
@@ -466,7 +464,7 @@ class Planner:
 
         return sanitized
 
-    async def plan(self, goal: str, causal_graph_summary: str = "") -> tuple[List[Dict], Dict]:
+    async def plan(self, goal: str, causal_graph_summary: str = "") -> tuple[list[dict], dict]:
         """
         执行规划，将目标分解为图操作指令。
 
@@ -492,8 +490,7 @@ class Planner:
                     plan_data["graph_operations"], completed_node_ids=set()
                 )
                 return sanitized_ops, call_metrics
-            else:
-                raise ValueError("Planner输出格式错误，缺少 `graph_operations` 键。")
+            raise ValueError("Planner输出格式错误，缺少 `graph_operations` 键。")
 
         except (json.JSONDecodeError, ValueError, Exception) as e:
             # 记录异常到console_output.log
@@ -525,7 +522,7 @@ class Planner:
         retrieved_experience: str,
         causal_graph_summary: str,
         attack_path_summary: str = "",
-        failure_patterns_summary: Dict[str, Any] = None,
+        failure_patterns_summary: dict[str, Any] = None,
         failed_tasks_summary: str = "",
         planner_context=None,
     ) -> str:
@@ -571,13 +568,13 @@ class Planner:
         self,
         goal: str,
         graph_summary: str,
-        intelligence_summary: Optional[Dict[str, Any]],
+        intelligence_summary: dict[str, Any] | None,
         causal_graph_summary: str = "",
         attack_path_summary: str = "",
-        failure_patterns_summary: Dict[str, Any] = None,  # New
+        failure_patterns_summary: dict[str, Any] = None,  # New
         graph_manager=None,  # 新增参数用于访问探索状态
         planner_context=None,  # 新增：Planner上下文对象
-    ) -> tuple[Dict[str, Any], Dict]:
+    ) -> tuple[dict[str, Any], dict]:
         """
         基于情报摘要执行动态规划（重构版：主动决策而非审批）。
 
@@ -646,7 +643,7 @@ class Planner:
                 self._last_dynamic_response = None
             else:
                 self._last_dynamic_response = str(plan_data)
-            
+
             if isinstance(plan_data, dict) and "graph_operations" in plan_data:
                 plan_data.setdefault("reasoning", {})
                 plan_data.setdefault("global_mission_briefing", "")
@@ -666,8 +663,7 @@ class Planner:
                 except Exception:
                     pass
                 return plan_data, call_metrics
-            else:
-                raise ValueError("Planner输出格式错误，缺少 `graph_operations` 键。")
+            raise ValueError("Planner输出格式错误，缺少 `graph_operations` 键。")
 
         except (json.JSONDecodeError, ValueError, Exception) as e:
             print(f"解析Planner动态输出失败: {e}")
@@ -675,7 +671,7 @@ class Planner:
 
     async def regenerate_branch_plan(
         self, goal: str, graph_manager, failed_branch_root_id: str, failure_reason: str
-    ) -> tuple[List[Dict], Dict]:
+    ) -> tuple[list[dict], dict]:
         """
         为一个失败的计划分支生成替代方案（已迁移到新模板系统）。
 
@@ -735,13 +731,13 @@ class Planner:
                             continue
                         if node_id in seen_add_ids:
                             continue
-                        
+
                         # 关键修复：清理新节点的依赖关系，移除对dead_branch的依赖
                         dependencies = node_data.get("dependencies", [])
                         if dependencies:
                             # 过滤掉指向dead_branch的依赖
                             clean_dependencies = [dep for dep in dependencies if dep not in dead_branch_ids]
-                            
+
                             # 如果所有依赖都被移除了，需要找到一个合适的替代依赖
                             if not clean_dependencies and dependencies:
                                 # 尝试找到dead_branch父节点的其他健康子节点
@@ -751,7 +747,7 @@ class Planner:
                                     if parents_of_failed:
                                         parent = parents_of_failed[0]
                                         # 获取父节点的其他已完成的子节点
-                                        siblings = [succ for succ in graph_manager.graph.successors(parent) 
+                                        siblings = [succ for succ in graph_manager.graph.successors(parent)
                                                    if graph_manager.graph.nodes[succ].get('status') == 'completed'
                                                    and succ not in dead_branch_ids]
                                         if siblings:
@@ -763,9 +759,9 @@ class Planner:
                                     _get_console().print(f"[yellow]警告：无法自动修复节点 {node_id} 的依赖关系: {e}[/yellow]")
                                     # 如果无法找到替代依赖，将依赖设为空（成为根节点的直接子节点）
                                     clean_dependencies = []
-                            
+
                             node_data["dependencies"] = clean_dependencies
-                        
+
                         # 若要添加的节点已存在，则交由执行层处理为更新；此处仍保留，但避免重复
                         seen_add_ids.add(node_id)
                         sanitized_ops.append(op)
@@ -800,8 +796,7 @@ class Planner:
                         sanitized_ops.append(op)
 
                 return sanitized_ops, call_metrics
-            else:
-                raise ValueError("分支重新规划的输出格式错误，缺少 `graph_operations` 键。")
+            raise ValueError("分支重新规划的输出格式错误，缺少 `graph_operations` 键。")
 
         except (json.JSONDecodeError, ValueError, Exception) as e:
             _get_console().print(f"[bold red]解析分支重新规划输出失败: {e}[/bold red]")
@@ -823,8 +818,9 @@ class Planner:
         Returns:
             更新后的规划上下文对象
         """
-        from core.data_contracts import PlanningAttempt
         import time
+
+        from core.data_contracts import PlanningAttempt
 
         # 创建新的规划尝试记录（包含完整LLM输入输出）
         attempt = PlanningAttempt(

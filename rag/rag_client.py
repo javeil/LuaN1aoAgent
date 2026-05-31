@@ -1,8 +1,9 @@
-import os
 import hashlib
 import math
+import os
 import re
-from typing import List, Dict, Any, Optional, Set
+from typing import Any
+
 import numpy as np
 
 # 使用 FAISS 持久化向量库，避免每次启动重新向量化
@@ -36,7 +37,7 @@ class HybridQueryEmbedder:
         self.model = get_embedding_model(base_dir) if get_embedding_model else None
         self.dim = get_model_dim(self.model, dim) if get_model_dim else dim
 
-    def encode(self, texts: List[str]) -> List[List[float]]:
+    def encode(self, texts: list[str]) -> list[list[float]]:
         if self.model is not None:
             try:
                 vecs = self.model.encode(texts, convert_to_numpy=False)
@@ -45,7 +46,7 @@ class HybridQueryEmbedder:
                 pass
         return [self._hash_embed(t) for t in texts]
 
-    def _hash_embed(self, text: str) -> List[float]:
+    def _hash_embed(self, text: str) -> list[float]:
         vec = [0.0] * self.dim
         for token in re.findall(r"\b\w+\b", text.lower()):
             d = hashlib.sha256(token.encode("utf-8")).digest()
@@ -71,11 +72,11 @@ class RAGClient:
     def __init__(self, base_dir: str):
         self.base_dir = base_dir
         self.index = None
-        self.doc_store: Dict[str, Any] = {}
+        self.doc_store: dict[str, Any] = {}
         self.query_embedder = HybridQueryEmbedder(base_dir=base_dir)
         # 词项统计（用于通用词法检索与重排加权）
-        self._idf: Dict[str, float] = {}
-        self._doc_len: Dict[str, int] = {}
+        self._idf: dict[str, float] = {}
+        self._doc_len: dict[str, int] = {}
         self._avg_doc_len: float = 0.0
 
     def is_available(self) -> bool:
@@ -98,7 +99,7 @@ class RAGClient:
             if os.path.isfile(store_fp):
                 import json
 
-                with open(store_fp, "r", encoding="utf-8") as f:
+                with open(store_fp, encoding="utf-8") as f:
                     self.doc_store = json.load(f)
             else:
                 self.doc_store = {}
@@ -108,7 +109,7 @@ class RAGClient:
 
         # 构建 doc_id -> 有序分块映射，用于检索阶段进行邻居合并
         # 结构: self._doc_chunks[doc_id] = [ {"id": chunk_id, "text": text, "meta": meta}, ... ]
-        self._doc_chunks: Dict[str, List[Dict[str, Any]]] = {}
+        self._doc_chunks: dict[str, list[dict[str, Any]]] = {}
         try:
             for _, entry in self.doc_store.items():
                 if not isinstance(entry, dict):
@@ -131,7 +132,7 @@ class RAGClient:
 
         # 构建 IDF 与分块长度统计（BM25 风格，通用提升词法检索准确率）
         try:
-            df_map: Dict[str, int] = {}
+            df_map: dict[str, int] = {}
             total_len = 0
             N = 0
             for key, entry in self.doc_store.items():
@@ -148,7 +149,7 @@ class RAGClient:
                 uniq = set(tokens)
                 for t in uniq:
                     df_map[t] = df_map.get(t, 0) + 1
-            idf: Dict[str, float] = {}
+            idf: dict[str, float] = {}
             for t, df in df_map.items():
                 # BM25 常用 IDF：log((N - df + 0.5)/(df + 0.5) + 1)
                 try:
@@ -165,7 +166,7 @@ class RAGClient:
             self._doc_len = {}
             self._avg_doc_len = 0.0
 
-    def query(self, text: str, top_k: int = 10) -> List[Dict[str, Any]]:
+    def query(self, text: str, top_k: int = 10) -> list[dict[str, Any]]:
         """基于 FAISS 检索相似文档片段。支持分块级别的检索。"""
         if not self.is_available() or self.index is None or not self.doc_store:
             return []
@@ -181,7 +182,7 @@ class RAGClient:
         except Exception:
             return []
 
-        results: List[Dict[str, Any]] = []
+        results: list[dict[str, Any]] = []
         # idxs 是 int64 的ID，与 doc_store 的键对应（字符串化）
         for j, id64 in enumerate(idxs[0]):
             key = str(int(id64))
@@ -245,8 +246,8 @@ class RAGClient:
     DOC_QUOTA_DEFAULT = 2  # 同一文档最多出现次数
 
     def _rerank_and_deduplicate(
-        self, results: List[Dict[str, Any]], top_k: int, query_text: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+        self, results: list[dict[str, Any]], top_k: int, query_text: str | None = None
+    ) -> list[dict[str, Any]]:
         """轻量级重排和去重，确保结果多样性和质量"""
         if not results:
             return []
@@ -256,8 +257,8 @@ class RAGClient:
         sorted_results = sorted(results, key=lambda x: x["score"], reverse=True)
 
         # 2. 文档级别的去重（动态配额），quota_default为允许同一个文档出现的次数
-        doc_counts: Dict[str, int] = {}
-        deduplicated: List[Dict[str, Any]] = []
+        doc_counts: dict[str, int] = {}
+        deduplicated: list[dict[str, Any]] = []
         quota_default = self.DOC_QUOTA_DEFAULT
         for result in sorted_results:
             doc_id = result.get("doc_id", "")
@@ -323,7 +324,7 @@ class RAGClient:
         final_results.sort(key=lambda x: x["score"], reverse=True)
         return final_results[:top_k]
 
-    def _detect_symbol_categories(self, text: str) -> Set[str]:
+    def _detect_symbol_categories(self, text: str) -> set[str]:
         """简化符号类别检测，使用标准库替代复杂规则。"""
         categories = set()
         s = (text or "").lower()
@@ -380,7 +381,7 @@ class RAGClient:
 
         return categories
 
-    def _is_technical_rule_pattern(self, text: str, query_text: Optional[str] = None) -> bool:
+    def _is_technical_rule_pattern(self, text: str, query_text: str | None = None) -> bool:
         """检测技术规则模式，避免硬编码特定中文关键词。"""
         s = (text or "").lower()
 
@@ -416,7 +417,7 @@ class RAGClient:
         # 通用规则模式：规则指示器 + 符号组合
         return rule_count >= 2 and symbol_count >= 2
 
-    def _optimize_long_snippets(self, result: Dict[str, Any], query_text: Optional[str] = None) -> None:
+    def _optimize_long_snippets(self, result: dict[str, Any], query_text: str | None = None) -> None:
         """优化过长片段的显示，通用化实现。"""
         try:
             desired_len = self._get_snippet_len()
@@ -457,7 +458,7 @@ class RAGClient:
         position: int,
         desired_len: int = 2000,
         neighbor_window: int = 4,
-        query_text: Optional[str] = None,
+        query_text: str | None = None,
     ) -> str:
         """
         基于当前分块位置，向两侧合并邻居分块以构造更丰富的片段。
@@ -568,7 +569,7 @@ class RAGClient:
             return snippet
         try:
             parts = re.split(r"(```[\s\S]*?```)", snippet)
-            normalized_parts: List[str] = []
+            normalized_parts: list[str] = []
             header_pat = re.compile(r"^(#{1,6})\s+(.+)$")
             for part in parts:
                 if not part:
@@ -580,7 +581,7 @@ class RAGClient:
                     continue
                 # 非代码块：按行处理
                 lines = part.splitlines()
-                new_lines: List[str] = []
+                new_lines: list[str] = []
                 prev_norm = None
                 prev_is_header = False
                 for line in lines:
@@ -606,7 +607,7 @@ class RAGClient:
             return snippet
 
     @staticmethod
-    def _best_chunk_index_by_terms(lst: List[Dict[str, Any]], terms: List[str], preferred_idx: int) -> int:
+    def _best_chunk_index_by_terms(lst: list[dict[str, Any]], terms: list[str], preferred_idx: int) -> int:
         """在文档分块中依据查询词选择最佳分块索引；若无命中则回退 preferred_idx。"""
         if not lst or not terms:
             return preferred_idx
@@ -656,7 +657,7 @@ class RAGClient:
         return best_idx
 
     @staticmethod
-    def _extract_query_terms(query_text: str) -> List[str]:
+    def _extract_query_terms(query_text: str) -> list[str]:
         """抽取查询关键词，采用通用化的符号和编码变体生成策略。
         - 提取中英文词汇作为基础术语
         - 动态识别符号并生成相关变体（编码、全角、HTML实体等）
@@ -672,7 +673,7 @@ class RAGClient:
         terms = [t.lower() for t in (cn_terms + en_terms)]
 
         # 通用符号变体生成
-        def _generate_symbol_variants(src: str) -> List[str]:
+        def _generate_symbol_variants(src: str) -> list[str]:
             """通用符号变体生成器，使用SymbolUtils简化实现"""
             variants = []
             s = src.lower()
@@ -717,7 +718,7 @@ class RAGClient:
                             # URL编码
                             url_encoded = "".join(f"%{ord(c):02X}" for c in char)
                             variants.append(url_encoded.lower())
-                        except (ValueError, TypeError, AttributeError) as e:
+                        except (ValueError, TypeError, AttributeError):
                             # 忽略无法编码的字符
                             pass
 
@@ -748,7 +749,7 @@ class RAGClient:
         return unique_terms
 
     @staticmethod
-    def _keyword_anchored_slice(content: str, query_text: str, desired_len: int) -> Optional[str]:
+    def _keyword_anchored_slice(content: str, query_text: str, desired_len: int) -> str | None:
         """在内容中定位关键词并居中截断;若找不到,返回 None。"""
         if not content or not query_text:
             return None
@@ -793,7 +794,7 @@ class RAGClient:
             return RAGClient._truncate_on_sentence_boundary(snippet, desired_len)
         return snippet  # 直接返回，不进行额外截断
 
-    def _semantic_anchor_slice(self, content: str, query_text: str, desired_len: int) -> Optional[str]:
+    def _semantic_anchor_slice(self, content: str, query_text: str, desired_len: int) -> str | None:
         """语义锚定回退：按句切分，选与查询最相似的句子为锚点，并向两侧扩展。"""
         if not content or not query_text:
             return None
@@ -852,7 +853,7 @@ class RAGClient:
         except Exception:
             return None
 
-    def _lexical_candidates(self, query_text: str, limit: int = 10) -> List[Dict[str, Any]]:
+    def _lexical_candidates(self, query_text: str, limit: int = 10) -> list[dict[str, Any]]:
         """词法召回回退：遍历文档分块，按查询词命中次数选出若干候选。
         返回的结构与 FAISS 结果一致，便于统一重排与去重。
         """
@@ -861,7 +862,7 @@ class RAGClient:
         terms = [t for t in terms_all if re.fullmatch(r"[a-z0-9]{2,}", t)]
         if not terms:
             return []
-        candidates: List[Dict[str, Any]] = []
+        candidates: list[dict[str, Any]] = []
         try:
             # BM25 参数
             k1 = self.BM25_K1
@@ -926,7 +927,7 @@ class RAGClient:
         return candidates[: max(1, limit)]
 
     @staticmethod
-    def _tokenize(text: str) -> List[str]:
+    def _tokenize(text: str) -> list[str]:
         """简单英文/数字分词：用于 DF/IDF 与 BM25 统计。"""
         s = (text or "").lower()
         try:
@@ -935,10 +936,10 @@ class RAGClient:
             return []
 
 
-_rag_client_instance: Optional[RAGClient] = None
+_rag_client_instance: RAGClient | None = None
 
 
-def get_rag_client(project_root: Optional[str] = None) -> RAGClient:
+def get_rag_client(project_root: str | None = None) -> RAGClient:
     global _rag_client_instance
     if _rag_client_instance is None:
         base_dir = project_root or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

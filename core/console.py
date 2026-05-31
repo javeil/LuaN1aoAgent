@@ -3,9 +3,10 @@
 提供全局访问的Rich Console对象，通过getter函数获取。
 """
 
-from rich.console import Console
-from typing import TextIO, Any
 import sys
+from typing import Any, TextIO
+
+from rich.console import Console
 
 _console = Console()
 
@@ -71,7 +72,7 @@ def init_console_with_file(log_file: TextIO) -> Console:
 
     # 创建一个多文件写入器，同时写入stdout和日志文件
     multi_writer = MultiFileWriter(sys.stdout, log_file)
-    
+
     # 检测 stdout 是否为终端，以决定是否强制开启颜色
     # MultiFileWriter 没有 isatty 方法，会导致 rich 默认关闭颜色
     is_terminal = False

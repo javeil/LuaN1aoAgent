@@ -5,7 +5,6 @@
 
 import os
 import threading
-from typing import Optional
 
 try:
     from sentence_transformers import SentenceTransformer
@@ -13,11 +12,11 @@ except ImportError:
     SentenceTransformer = None
 
 # 全局模型实例
-_global_model: Optional[SentenceTransformer] = None
+_global_model: SentenceTransformer | None = None
 _model_lock = threading.Lock()
 
 
-def get_embedding_model(project_root: Optional[str] = None) -> Optional[SentenceTransformer]:
+def get_embedding_model(project_root: str | None = None) -> SentenceTransformer | None:
     """
     获取全局共享的句向量模型实例（线程安全）。
 
@@ -73,7 +72,7 @@ def get_embedding_model(project_root: Optional[str] = None) -> Optional[Sentence
             return None
 
 
-def get_model_dim(model: Optional[SentenceTransformer] = None, default_dim: int = 384) -> int:
+def get_model_dim(model: SentenceTransformer | None = None, default_dim: int = 384) -> int:
     """
     获取模型的嵌入维度。
 

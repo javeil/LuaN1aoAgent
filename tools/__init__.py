@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """LuaN1ao工具集成模块.
 
 本包提供MCP (Model Control Protocol) 工具集成功能，
@@ -18,9 +17,9 @@
 
 from tools.mcp_client import (
     call_mcp_tool_async,
-    initialize_sessions,
     close_async_sessions,
-    get_all_tools_detailed_async, # Changed to async version
+    get_all_tools_detailed_async,  # Changed to async version
+    initialize_sessions,
 )
 
 __all__ = [

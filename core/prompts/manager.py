@@ -3,20 +3,20 @@
 统一提示词管理器 (Centralized Prompt Manager)
 """
 
-import os
 import json
-from typing import Dict, Any, List, Optional
+import os
+from typing import Any
+
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from conf.config import EXECUTOR_MAX_STEPS, PROMPT_LANGUAGE, SCENARIO_MODE
 from core.prompts.renderers import (
     render_causal_graph,
+    render_dependencies_summary,
     render_failure_patterns,
     render_key_facts,
-    render_dependencies_summary,
 )
 
-
-from conf.config import SCENARIO_MODE, PROMPT_LANGUAGE, EXECUTOR_MAX_STEPS
 
 class PromptManager:
     """
@@ -51,7 +51,7 @@ class PromptManager:
         self.branch_replan_template = self.env.get_template("branch_replan_template.jinja2")
 
     def build_planner_prompt(
-        self, goal: str, context: Dict[str, Any], is_dynamic: bool = False, planner_context: Optional[Any] = None
+        self, goal: str, context: dict[str, Any], is_dynamic: bool = False, planner_context: Any | None = None
     ) -> str:
         """
         构建 Planner 提示词
@@ -97,7 +97,7 @@ class PromptManager:
         return self.planner_template.render(**input_variables)
 
     def build_executor_prompt(
-        self, main_goal: str, subtask: Dict[str, Any], context: Dict[str, Any], global_mission_briefing: str = ""
+        self, main_goal: str, subtask: dict[str, Any], context: dict[str, Any], global_mission_briefing: str = ""
     ) -> str:
         """
         构建 Executor 提示词
@@ -158,12 +158,12 @@ class PromptManager:
 
     def build_reflector_prompt(
         self,
-        subtask: Dict[str, Any],
+        subtask: dict[str, Any],
         status: str,
         execution_log: str,
-        staged_causal_nodes: List[Dict],
-        context: Dict[str, Any],
-        reflector_context: Optional[Any] = None,
+        staged_causal_nodes: list[dict],
+        context: dict[str, Any],
+        reflector_context: Any | None = None,
     ) -> str:
         """
         构建 Reflector 提示词
@@ -237,7 +237,7 @@ class PromptManager:
         from core.tool_manager import get_dynamic_tools_documentation
 
         tools_documentation = get_dynamic_tools_documentation()
-        
+
         tools_section = f"""
 {tools_documentation}
 

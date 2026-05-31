@@ -1,30 +1,30 @@
 import asyncio
-import time
-from typing import Dict, Any, Optional, Literal
-from dataclasses import dataclass, field
-import uuid
 import logging
+import time
+import uuid
+from typing import Any
 
 from core.database.utils import (
     create_intervention_request,
     get_pending_intervention_request,
     update_intervention_response,
-    get_intervention_request as db_get_intervention_request, # Rename to avoid conflict
 )
-from core.database.models import InterventionModel
+from core.database.utils import (
+    get_intervention_request as db_get_intervention_request,  # Rename to avoid conflict
+)
 
 # Logger for intervention manager
 logger = logging.getLogger(__name__)
 
 class InterventionManager:
-    async def request_approval(self, op_id: str, data: Any, type: str = "plan_approval", timeout_seconds: int = 3600) -> Dict[str, Any]:
+    async def request_approval(self, op_id: str, data: Any, type: str = "plan_approval", timeout_seconds: int = 3600) -> dict[str, Any]:
         """
         Agent发起审批请求，将其持久化到数据库，并阻塞等待Web UI的决策。
         """
         req_id = f"req_{int(time.time())}_{str(uuid.uuid4())[:8]}"
-        
+
         logger.info(f"Agent {op_id}: 发起审批请求 '{req_id}', 类型: {type}")
-        
+
         # 1. 创建数据库中的审批请求
         try:
             await create_intervention_request(req_id, op_id, type, data)
@@ -54,7 +54,7 @@ class InterventionManager:
         # 超时默认拒绝
         return {"action": "REJECT", "data": "Intervention request timed out."}
 
-    async def get_pending_request(self, op_id: str) -> Optional[Dict[str, Any]]:
+    async def get_pending_request(self, op_id: str) -> dict[str, Any] | None:
         """
         Web UI调用此方法获取特定op_id下是否存在挂起的审批请求。
         """
@@ -87,7 +87,7 @@ class InterventionManager:
         db_status = db_status_map.get(action.upper(), "pending") # Default to pending if unknown
 
         logger.info(f"Web: 提交决策 '{action}' for request '{req_id}', 状态: {db_status}")
-        
+
         try:
             await update_intervention_response(req_id, db_status, response_data=modified_data)
             return True

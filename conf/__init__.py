@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """LuaN1ao配置模块.
 
 本包提供系统的配置管理功能，包括API密钥、模型参数等核心配置项。
@@ -16,8 +15,8 @@ from conf.config import (
     LLM_API_KEY,
     LLM_FALLBACK_API_KEY,
     LLM_MODELS,
-    LLM_TEMPERATURES,
     LLM_PROVIDER,
+    LLM_TEMPERATURES,
 )
 
 __all__ = [

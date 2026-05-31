@@ -1,10 +1,11 @@
-import os
-import sys
-import json
 import hashlib
+import json
 import math
+import os
 import re
-from typing import Dict, List, Tuple, Any
+import sys
+from typing import Any
+
 import numpy as np
 
 # 导入分块器
@@ -47,7 +48,7 @@ def project_root() -> str:
 def load_env_variables() -> None:
     """使用 python-dotenv 加载 .env 环境变量。"""
     try:
-        from dotenv import load_dotenv, find_dotenv
+        from dotenv import find_dotenv, load_dotenv
 
         load_dotenv(find_dotenv(), override=False)
     except ImportError:
@@ -83,11 +84,11 @@ def sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
-def load_manifest(path: str) -> Dict[str, Any]:
+def load_manifest(path: str) -> dict[str, Any]:
     if not os.path.isfile(path):
         return {"documents": {}, "chunks": {}}
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
             # 向后兼容：如果旧格式，转换为新格式
             if "documents" not in data:
@@ -97,14 +98,14 @@ def load_manifest(path: str) -> Dict[str, Any]:
         return {"documents": {}, "chunks": {}}
 
 
-def save_manifest(path: str, data: Dict[str, Any]) -> None:
+def save_manifest(path: str, data: dict[str, Any]) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-def list_kb_files(root: str) -> List[Tuple[str, str]]:
-    docs: List[Tuple[str, str]] = []
+def list_kb_files(root: str) -> list[tuple[str, str]]:
+    docs: list[tuple[str, str]] = []
     base_dir = kb_root_dir(root)
     if not os.path.isdir(base_dir):
         return docs
@@ -134,10 +135,10 @@ class OfflineHasherEmbedder:
     def __init__(self, dim: int = 384):
         self.dim = dim
 
-    def encode(self, texts: List[str]) -> List[List[float]]:
+    def encode(self, texts: list[str]) -> list[list[float]]:
         return [self._hash_embed(t) for t in texts]
 
-    def _hash_embed(self, text: str) -> List[float]:
+    def _hash_embed(self, text: str) -> list[float]:
         vec = [0.0] * self.dim
         for token in re.findall(r"\b\w+\b", text.lower()):
             d = hashlib.sha256(token.encode("utf-8")).digest()
@@ -156,8 +157,8 @@ def create_embedder(model_dir: str = None) -> object:
     优先使用 model_manager 提供的全局模型；否则使用 OfflineHasherEmbedder。
     """
     try:
-        import sys
         import os
+        import sys
 
         # 确保 rag 模块在路径中
         rag_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "rag")
@@ -196,7 +197,7 @@ def _id64_for_chunk(chunk_id: str) -> int:
     return val
 
 
-def _normalize(vecs: List[List[float]]) -> np.ndarray:
+def _normalize(vecs: list[list[float]]) -> np.ndarray:
     if not vecs:
         # 处理空向量列表的情况
         return np.array([], dtype=np.float32).reshape(0, 384)
@@ -206,7 +207,7 @@ def _normalize(vecs: List[List[float]]) -> np.ndarray:
     return arr / norms
 
 
-def _parse_force_controls() -> Tuple[bool, List[str]]:
+def _parse_force_controls() -> tuple[bool, list[str]]:
     """
     解析强制重建控制：
     - 命令行：`--force-all` 或 `--force-doc=<pattern>`（可多次）
@@ -217,7 +218,7 @@ def _parse_force_controls() -> Tuple[bool, List[str]]:
     """
     args = sys.argv[1:]
     force_all = False
-    force_docs: List[str] = []
+    force_docs: list[str] = []
 
     # 命令行参数
     for i, arg in enumerate(args):
@@ -248,7 +249,7 @@ def _parse_force_controls() -> Tuple[bool, List[str]]:
     return force_all, force_docs
 
 
-def _is_force_target(doc_id: str, full_path: str, patterns: List[str]) -> bool:
+def _is_force_target(doc_id: str, full_path: str, patterns: list[str]) -> bool:
     """判断文档是否匹配强制重建模式。子串大小写不敏感匹配 doc_id 或 full_path。"""
     if not patterns:
         return False
@@ -299,7 +300,7 @@ def main():
         # 1) 若强制重建，忽略哈希匹配，直接加入待处理
         if force_all or _is_force_target(doc_id, full_path, force_doc_patterns):
             try:
-                with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
+                with open(full_path, encoding="utf-8", errors="ignore") as f:
                     content = f.read()
                 meta = {"path": full_path, "mtime": mtime, "size": size, "hash": digest, "force": True}
                 to_upsert_docs.append((doc_id, content, meta))
@@ -311,7 +312,7 @@ def main():
         if not doc_manifest or doc_manifest.get("hash") != digest:
             # 新增或更新
             try:
-                with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
+                with open(full_path, encoding="utf-8", errors="ignore") as f:
                     content = f.read()
                 meta = {"path": full_path, "mtime": mtime, "size": size, "hash": digest}
                 to_upsert_docs.append((doc_id, content, meta))
@@ -355,7 +356,7 @@ def main():
     store_fp = store_path(root)
     if os.path.isfile(store_fp):
         try:
-            with open(store_fp, "r", encoding="utf-8") as f:
+            with open(store_fp, encoding="utf-8") as f:
                 doc_store = json.load(f)
         except Exception:
             doc_store = {}
@@ -378,7 +379,7 @@ def main():
                     chunk_id64 = _id64_for_chunk(chunk_id)
                     try:
                         index.remove_ids(np.array([chunk_id64], dtype=np.int64))
-                    except (RuntimeError, KeyError) as e:
+                    except (RuntimeError, KeyError):
                         # 分块可能不存在于索引中，继续处理其他分块
                         pass
 
@@ -435,7 +436,7 @@ def main():
                     chunk_id64 = _id64_for_chunk(chunk_id)
                     try:
                         index.remove_ids(np.array([chunk_id64], dtype=np.int64))
-                    except (RuntimeError, KeyError) as e:
+                    except (RuntimeError, KeyError):
                         # 旧分块可能已被删除，忽略错误继续处理
                         pass
 

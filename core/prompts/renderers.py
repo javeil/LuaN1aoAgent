@@ -4,11 +4,10 @@
 提供统一的上下文格式化功能，确保所有Agent看到的“世界”是一致的
 """
 
-import json
-from typing import Dict, Any, List
+from typing import Any
 
 
-def render_causal_graph(context: Dict[str, Any], mode: str = "full") -> str:
+def render_causal_graph(context: dict[str, Any], mode: str = "full") -> str:
     """
     统一的因果图渲染逻辑。
 
@@ -26,11 +25,10 @@ def render_causal_graph(context: Dict[str, Any], mode: str = "full") -> str:
 
     if mode == "relevant":
         return _render_relevant_causal_context(context)
-    else:
-        return _render_full_causal_graph(context)
+    return _render_full_causal_graph(context)
 
 
-def _render_full_causal_graph(context: Dict[str, Any]) -> str:
+def _render_full_causal_graph(context: dict[str, Any]) -> str:
     """渲染完整的因果图谱摘要。"""
     lines = ["### 🗺️ 系统因果认知图谱 (Causal Knowledge Graph)"]
 
@@ -64,7 +62,7 @@ def _render_full_causal_graph(context: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _render_relevant_causal_context(causal_context: Dict[str, Any]) -> str:
+def _render_relevant_causal_context(causal_context: dict[str, Any]) -> str:
     """
     将get_relevant_causal_context返回的结构化数据格式化为供Executor使用的文本。
     Executor只需要与当前任务相关的、经过过滤的上下文，而非完整图谱。
@@ -133,7 +131,7 @@ def _render_relevant_causal_context(causal_context: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def render_failure_patterns(patterns: Dict[str, Any]) -> str:
+def render_failure_patterns(patterns: dict[str, Any]) -> str:
     """
     统一的失败模式渲染（含竞争假设消解）。
 
@@ -148,7 +146,7 @@ def render_failure_patterns(patterns: Dict[str, Any]) -> str:
     """
     if not patterns:
         return "无已知的失败模式。"
-    
+
     # 兼容旧版调用：如果传入的是字符串，直接返回
     if isinstance(patterns, str):
         return f"### ⚠️ 历史失败模式\n{patterns}"
@@ -196,7 +194,7 @@ def render_failure_patterns(patterns: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def render_key_facts(key_facts: List[Any]) -> str:
+def render_key_facts(key_facts: list[Any]) -> str:
     """
     统一的关键事实渲染。
 
@@ -222,26 +220,26 @@ def render_key_facts(key_facts: List[Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _dep_task_id(dep: Dict[str, Any]) -> str:
+def _dep_task_id(dep: dict[str, Any]) -> str:
     return dep.get("task_id") or dep.get("id") or "unknown"
 
 
-def _dep_description(dep: Dict[str, Any]) -> str:
+def _dep_description(dep: dict[str, Any]) -> str:
     return dep.get("description") or dep.get("summary") or "N/A"
 
 
-def _dep_status(dep: Dict[str, Any]) -> str:
+def _dep_status(dep: dict[str, Any]) -> str:
     return dep.get("status", "unknown")
 
 
-def _get_key_findings(dep: Dict[str, Any]) -> List[str] | None:
+def _get_key_findings(dep: dict[str, Any]) -> list[str] | None:
     key_findings = dep.get("key_findings")
     if not key_findings and isinstance(dep.get("summary"), str) and dep.get("summary").strip():
         key_findings = [dep["summary"]]
     return key_findings
 
 
-def _get_failure_reason(dep: Dict[str, Any]) -> str | None:
+def _get_failure_reason(dep: dict[str, Any]) -> str | None:
     failure_reason = dep.get("failure_reason")
     if not failure_reason:
         status_val = str(_dep_status(dep)).lower()
@@ -250,7 +248,7 @@ def _get_failure_reason(dep: Dict[str, Any]) -> str | None:
     return failure_reason
 
 
-def _get_nodes_produced(dep: Dict[str, Any]) -> List[str] | None:
+def _get_nodes_produced(dep: dict[str, Any]) -> list[str] | None:
     nodes_produced = dep.get("nodes_produced")
     if not nodes_produced and dep.get("artifacts"):
         try:
@@ -265,7 +263,7 @@ def _get_nodes_produced(dep: Dict[str, Any]) -> List[str] | None:
     return nodes_produced
 
 
-def render_dependencies_summary(deps: List[Dict[str, Any]]) -> str:
+def render_dependencies_summary(deps: list[dict[str, Any]]) -> str:
     """
     格式化依赖任务摘要。
 
@@ -278,7 +276,7 @@ def render_dependencies_summary(deps: List[Dict[str, Any]]) -> str:
     if not deps:
         return "无依赖任务。这是一个独立的初始任务。"
 
-    lines: List[str] = []
+    lines: list[str] = []
     for dep in deps:
         task_id = _dep_task_id(dep)
         description = _dep_description(dep)
@@ -326,6 +324,7 @@ def render_domain_knowledge(role: str) -> str:
         领域知识文本
     """
     import os
+
     from jinja2 import Environment, FileSystemLoader
 
     # 获取组件模板目录

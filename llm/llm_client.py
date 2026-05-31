@@ -2,28 +2,29 @@
 # LLM推理API封装，支持Qwen系列OpenAI兼容API
 # 依赖 openai>=1.0.0
 
-import sys
 import asyncio
-
-from typing import Any, Dict, List, Optional
-import httpx
 import json
 import re
+import sys
+from typing import Any
+
+import httpx
 from rich.panel import Panel
+
 from conf.config import (
-    LLM_PROVIDER,
-    LLM_API_BASE_URL,
-    LLM_API_KEY,
-    LLM_FALLBACK_API_KEY,
-    LLM_MODELS,
-    LLM_TEMPERATURES,
-    LLM_EXTRA_BODY_ENABLED,
-    LLM_THINKING,
     ANTHROPIC_API_BASE_URL,
     ANTHROPIC_API_KEY,
     ANTHROPIC_FALLBACK_API_KEY,
     ANTHROPIC_MODELS,
     ANTHROPIC_VERSION,
+    LLM_API_BASE_URL,
+    LLM_API_KEY,
+    LLM_EXTRA_BODY_ENABLED,
+    LLM_FALLBACK_API_KEY,
+    LLM_MODELS,
+    LLM_PROVIDER,
+    LLM_TEMPERATURES,
+    LLM_THINKING,
 )
 
 # 导入事件代理
@@ -34,7 +35,7 @@ except ImportError:
 
 
 class LLMClient:
-    def __init__(self, op_id: Optional[str] = None):
+    def __init__(self, op_id: str | None = None):
         self.provider = LLM_PROVIDER
         self.op_id = op_id  # 用于事件发送
 
@@ -85,7 +86,7 @@ class LLMClient:
         self.total_completion_tokens = 0
         self.estimated_cost = 0.0
 
-    def get_and_reset_metrics(self) -> Dict[str, Any]:
+    def get_and_reset_metrics(self) -> dict[str, Any]:
         """Retrieves the current metrics and resets the counters."""
         metrics = {
             "api_calls": self.api_calls,
@@ -97,7 +98,7 @@ class LLMClient:
         self.reset_metrics()
         return metrics
 
-    def _update_metrics(self, usage: Dict[str, Any], model_name: str) -> Dict[str, Any]:
+    def _update_metrics(self, usage: dict[str, Any], model_name: str) -> dict[str, Any]:
         """Updates metrics from the API response's usage object and returns per-call metrics."""
         if not usage:
             return {}
@@ -268,12 +269,12 @@ class LLMClient:
         if api_call_retries > max_retries:
             self._get_console().print("[bold red]API rate limit exceeded. Max retries reached.[/bold red]")
             raise e
-        
+
         # 指数退避: 10s, 20s, 40s, 80s...
         backoff_time = 10 * (2 ** (api_call_retries - 1))
         # 设置上限
         backoff_time = min(backoff_time, 120)
-        
+
         self._get_console().print(
             f"[bold yellow]Rate limit hit. Waiting {backoff_time}s to retry... ({api_call_retries}/{max_retries})[/bold yellow]"
         )
@@ -281,8 +282,8 @@ class LLMClient:
         return True, current_api_key, fallback_used, api_call_retries
 
     async def send_message(
-        self, messages: List[Dict[str, Any]], role: str = "default", expect_json: bool = True
-    ) -> tuple[Dict | str | None, Dict | None]:
+        self, messages: list[dict[str, Any]], role: str = "default", expect_json: bool = True
+    ) -> tuple[dict | str | None, dict | None]:
         """
         通过HTTP POST方式异步向LLM发送多轮消息，并返回解析后的内容和本次调用的指标。
         增加了JSON解析失败时的重试逻辑，并要求LLM修正格式。
@@ -374,10 +375,8 @@ class LLMClient:
                     final_json = self._robust_json_parser(content_string)
                     if final_json is not None:
                         return final_json, call_metrics
-                    else:
-                        raise json.JSONDecodeError("LLM content is not valid JSON.", content_string, 0)
-                else:
-                    return content_string, call_metrics
+                    raise json.JSONDecodeError("LLM content is not valid JSON.", content_string, 0)
+                return content_string, call_metrics
 
             except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError) as e:
                 should_continue, network_retries = await self._handle_network_error(e, network_retries, MAX_NETWORK_RETRIES)
@@ -426,7 +425,7 @@ class LLMClient:
                 raise e
         return None, None
 
-    def _generate_preservation_aware_compression_prompt(self, history_to_compress: List[Dict[str, str]]) -> str:
+    def _generate_preservation_aware_compression_prompt(self, history_to_compress: list[dict[str, str]]) -> str:
         """
         生成保护探索性思维的压缩提示词，用于LLM总结对话历史。
         Args:
@@ -496,7 +495,7 @@ class LLMClient:
 
 请将上述历史压缩为一份简洁但完整的测试进展报告，确保所有关键安全信息和探索性思维都得到妥善保留。报告应该让另一个智能体能够基于这份摘要继续进行有效的渗透测试。"""
 
-    async def summarize_conversation(self, messages_to_summarize: List[Dict[str, Any]]) -> tuple[str, Optional[Dict]]:
+    async def summarize_conversation(self, messages_to_summarize: list[dict[str, Any]]) -> tuple[str, dict | None]:
         """
         使用LLM总结一段对话，提取关键信息，并遵循保护探索性思维的原则。
         Args:
@@ -509,13 +508,13 @@ class LLMClient:
         summarization_messages = [{"role": "user", "content": compression_prompt_content}]
         # Use a specific role for summarization to potentially use a different model/temperature
         summary, metrics = await self.send_message(summarization_messages, role="summarizer", expect_json=False)
-        
+
         # Ensure summary is a string
         if summary is None:
              summary = ""
         elif not isinstance(summary, str):
              summary = str(summary)
-             
+
         return summary, metrics
 
     def _clean_json_string(self, json_string: str) -> str:
@@ -546,7 +545,7 @@ class LLMClient:
 
         return json_string.strip()
 
-    def _try_parse_json(self, json_string: str) -> Dict | None:
+    def _try_parse_json(self, json_string: str) -> dict | None:
         """
         尝试解析JSON字符串，如果是数组则包装为对象。
 
@@ -609,10 +608,10 @@ class LLMClient:
         # 简单处理尾随逗号
         fixed = re.sub(r",\s*}\s*$", "}", fixed)
         fixed = re.sub(r",\s*]\s*$", "]", fixed)
-        
+
         return fixed
 
-    def _robust_json_parser(self, json_string: str) -> Dict | None:
+    def _robust_json_parser(self, json_string: str) -> dict | None:
         """更健壮的 JSON 解析器：
         - 处理 UTF-8 BOM、首尾空白
         - 清理 Markdown 代码块（```json、```、~~~ 等）

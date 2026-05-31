@@ -1,15 +1,14 @@
-import os
-import logging
-import json
 import asyncio
+import logging
+import os
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Any
 
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
-from sqlalchemy import select, update, delete, event
+from sqlalchemy import delete, event, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from .models import Base, SessionModel, GraphNodeModel, GraphEdgeModel, EventLogModel, InterventionModel
+from .models import Base, EventLogModel, GraphEdgeModel, GraphNodeModel, InterventionModel, SessionModel
 
 # Default to a local SQLite database file
 DB_PATH = os.getenv("DATABASE_PATH", "luan1ao.db")
@@ -37,7 +36,7 @@ AsyncSessionLocal = async_sessionmaker(
 )
 
 
-def _extract_node_updated_at(node_data: Dict[str, Any]) -> Optional[float]:
+def _extract_node_updated_at(node_data: dict[str, Any]) -> float | None:
     if not isinstance(node_data, dict):
         return None
     raw = node_data.get("updated_at")
@@ -70,14 +69,14 @@ async def get_db_session() -> AsyncSession:
 
 # --- CRUD Operations ---
 
-async def create_session(session_id: str, name: str, goal: str, config: Dict[str, Any] = None):
+async def create_session(session_id: str, name: str, goal: str, config: dict[str, Any] = None):
     async with AsyncSessionLocal() as session:
         # 首先检查 session 是否已存在
         result = await session.execute(
             select(SessionModel).where(SessionModel.id == session_id)
         )
         existing = result.scalar_one_or_none()
-        
+
         if existing:
             # Session 已存在（由 web server 创建），只更新必要字段，但不覆盖 name
             # 这样用户在 web 端输入的任务名称会被保留
@@ -96,7 +95,7 @@ async def create_session(session_id: str, name: str, goal: str, config: Dict[str
                 created_at=datetime.now(),
                 updated_at=datetime.now()
             ))
-        
+
         await session.commit()
 
 async def update_session_status(session_id: str, status: str):
@@ -108,15 +107,15 @@ async def update_session_status(session_id: str, status: str):
         )
         await session.commit()
 
-async def upsert_node(session_id: str, node_id: str, graph_type: str, node_data: Dict[str, Any]):
+async def upsert_node(session_id: str, node_id: str, graph_type: str, node_data: dict[str, Any]):
     """Insert or update a graph node."""
     # Extract known fields for columns, put rest in data
     n_type = node_data.get("type") or node_data.get("node_type")
     status = node_data.get("status")
-    
-    # We need to serialize data properly. 
+
+    # We need to serialize data properly.
     # SQLAlchemy's JSON type handles dicts, but let's ensure it's clean.
-    
+
     async with AsyncSessionLocal() as session:
         # Check if exists to determine insert or update (or use upsert logic)
         # SQLite upsert
@@ -129,11 +128,11 @@ async def upsert_node(session_id: str, node_id: str, graph_type: str, node_data:
             data=node_data,
             updated_at=datetime.now()
         )
-        
+
         # We need a unique constraint on (session_id, node_id, graph_type) for true upsert
         # But for now, let's just do a select-then-update/insert pattern which is safer across DBs if constraints aren't perfect
         # Actually, let's rely on simple select check for now to avoid complex migration of unique constraints
-        
+
         result = await session.execute(
             select(GraphNodeModel).where(
                 GraphNodeModel.session_id == session_id,
@@ -142,7 +141,7 @@ async def upsert_node(session_id: str, node_id: str, graph_type: str, node_data:
             )
         )
         existing_records = result.scalars().all()
-        
+
         if existing_records:
             # Update the first record found
             target_record = existing_records[0]
@@ -157,7 +156,7 @@ async def upsert_node(session_id: str, node_id: str, graph_type: str, node_data:
                 target_record.status = status
                 target_record.data = node_data
                 target_record.updated_at = datetime.now()
-            
+
             # If there are duplicates, delete them to clean up the DB
             if len(existing_records) > 1:
                 for duplicate in existing_records[1:]:
@@ -171,14 +170,14 @@ async def upsert_node(session_id: str, node_id: str, graph_type: str, node_data:
                 status=status,
                 data=node_data
             ))
-        
+
         # Touch session updated_at to trigger SSE
         await session.execute(
             update(SessionModel)
             .where(SessionModel.id == session_id)
             .values(updated_at=datetime.now())
         )
-        
+
         await session.commit()
 
 async def delete_node(session_id: str, node_id: str, graph_type: str):
@@ -190,19 +189,19 @@ async def delete_node(session_id: str, node_id: str, graph_type: str):
                 GraphNodeModel.graph_type == graph_type
             )
         )
-        
+
         # Touch session updated_at to trigger SSE
         await session.execute(
             update(SessionModel)
             .where(SessionModel.id == session_id)
             .values(updated_at=datetime.now())
         )
-        
+
         await session.commit()
 
-async def add_edge(session_id: str, source: str, target: str, graph_type: str, edge_data: Dict[str, Any]):
+async def add_edge(session_id: str, source: str, target: str, graph_type: str, edge_data: dict[str, Any]):
     relation = edge_data.get("type") or edge_data.get("label") or "unknown"
-    
+
     async with AsyncSessionLocal() as session:
         # Check existence to avoid duplicates if needed, or just insert (assuming multigraph or simple check)
         result = await session.execute(
@@ -223,20 +222,20 @@ async def add_edge(session_id: str, source: str, target: str, graph_type: str, e
                 relation_type=relation,
                 data=edge_data
             ))
-            
+
             # Touch session updated_at to trigger SSE
             await session.execute(
                 update(SessionModel)
                 .where(SessionModel.id == session_id)
                 .values(updated_at=datetime.now())
             )
-            
+
             await session.commit()
 
 async def atomic_upsert_graph_data(
     session_id: str,
-    nodes: list[Dict[str, Any]] = None,
-    edges: list[Dict[str, Any]] = None,
+    nodes: list[dict[str, Any]] = None,
+    edges: list[dict[str, Any]] = None,
     graph_type: str = 'task'
 ):
     """
@@ -250,10 +249,10 @@ async def atomic_upsert_graph_data(
     """
     nodes = nodes or []
     edges = edges or []
-    
+
     if not nodes and not edges:
         return
-    
+
     async with AsyncSessionLocal() as session:
         try:
             # 1. 处理所有节点的 upsert
@@ -261,10 +260,10 @@ async def atomic_upsert_graph_data(
                 node_id = node_data.get('node_id') or node_data.get('id')
                 if not node_id:
                     continue
-                    
+
                 n_type = node_data.get("type") or node_data.get("node_type")
                 status = node_data.get("status")
-                
+
                 result = await session.execute(
                     select(GraphNodeModel).where(
                         GraphNodeModel.session_id == session_id,
@@ -273,7 +272,7 @@ async def atomic_upsert_graph_data(
                     )
                 )
                 existing_records = result.scalars().all()
-                
+
                 if existing_records:
                     # 更新第一条记录
                     target_record = existing_records[0]
@@ -287,7 +286,7 @@ async def atomic_upsert_graph_data(
                         target_record.status = status
                         target_record.data = node_data
                         target_record.updated_at = datetime.now()
-                    
+
                     # 删除重复记录
                     if len(existing_records) > 1:
                         for duplicate in existing_records[1:]:
@@ -301,16 +300,16 @@ async def atomic_upsert_graph_data(
                         status=status,
                         data=node_data
                     ))
-            
+
             # 2. 处理所有边的添加
             for edge_data in edges:
                 source = edge_data.get('source') or edge_data.get('source_id')
                 target = edge_data.get('target') or edge_data.get('target_id')
                 if not source or not target:
                     continue
-                    
+
                 relation = edge_data.get("type") or edge_data.get("label") or "unknown"
-                
+
                 result = await session.execute(
                     select(GraphEdgeModel).where(
                         GraphEdgeModel.session_id == session_id,
@@ -329,24 +328,24 @@ async def atomic_upsert_graph_data(
                         relation_type=relation,
                         data=edge_data
                     ))
-            
+
             # 3. 更新 session 的 updated_at
             await session.execute(
                 update(SessionModel)
                 .where(SessionModel.id == session_id)
                 .values(updated_at=datetime.now())
             )
-            
+
             # 4. 统一提交事务
             await session.commit()
-            
+
         except Exception as e:
             await session.rollback()
             logging.error(f"Atomic upsert failed, transaction rolled back: {e}")
             raise
 
 
-async def add_log(session_id: str, event_type: str, content: Dict[str, Any]):
+async def add_log(session_id: str, event_type: str, content: dict[str, Any]):
     try:
         async with AsyncSessionLocal() as session:
             session.add(EventLogModel(
@@ -362,7 +361,7 @@ async def add_log(session_id: str, event_type: str, content: Dict[str, Any]):
         traceback.print_exc()
 
 # --- Intervention CRUD Operations ---
-async def create_intervention_request(req_id: str, session_id: str, req_type: str, request_data: Dict[str, Any]):
+async def create_intervention_request(req_id: str, session_id: str, req_type: str, request_data: dict[str, Any]):
     async with AsyncSessionLocal() as session:
         intervention = InterventionModel(
             id=req_id,
@@ -378,14 +377,14 @@ async def create_intervention_request(req_id: str, session_id: str, req_type: st
         await session.refresh(intervention)
         return intervention
 
-async def get_intervention_request(req_id: str) -> Optional[InterventionModel]:
+async def get_intervention_request(req_id: str) -> InterventionModel | None:
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(InterventionModel).where(InterventionModel.id == req_id)
         )
         return result.scalar_one_or_none()
 
-async def get_pending_intervention_request(session_id: str) -> Optional[InterventionModel]:
+async def get_pending_intervention_request(session_id: str) -> InterventionModel | None:
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(InterventionModel)
@@ -394,7 +393,7 @@ async def get_pending_intervention_request(session_id: str) -> Optional[Interven
         )
         return result.scalar_one_or_none()
 
-async def update_intervention_response(req_id: str, status: str, response_data: Dict[str, Any] = None):
+async def update_intervention_response(req_id: str, status: str, response_data: dict[str, Any] = None):
     async with AsyncSessionLocal() as session:
         await session.execute(
             update(InterventionModel)

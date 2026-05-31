@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """LuaN1ao Web可视化模块.
 
 本包提供基于FastAPI的Web可视化服务，

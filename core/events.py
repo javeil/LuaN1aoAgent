@@ -1,7 +1,8 @@
 import asyncio
 import time
 from collections import deque
-from typing import Any, AsyncIterator, Dict, List, Optional
+from collections.abc import AsyncIterator
+from typing import Any
 
 
 class EventBroker:
@@ -36,11 +37,11 @@ class EventBroker:
         Args:
             buffer_size: 每个 op_id 的事件缓冲区大小，默认保存最近 100 条事件
         """
-        self._queues: Dict[str, List[asyncio.Queue]] = {}
-        self._event_buffers: Dict[str, deque] = {}
+        self._queues: dict[str, list[asyncio.Queue]] = {}
+        self._event_buffers: dict[str, deque] = {}
         self._buffer_size = buffer_size
 
-    def _get_subscribers(self, op_id: str) -> List[asyncio.Queue]:
+    def _get_subscribers(self, op_id: str) -> list[asyncio.Queue]:
         """
         获取指定操作ID的订阅者队列列表。
 
@@ -68,7 +69,7 @@ class EventBroker:
             self._event_buffers[op_id] = deque(maxlen=self._buffer_size)
         return self._event_buffers[op_id]
 
-    async def emit(self, event: str, payload: Dict[str, Any], op_id: Optional[str] = None) -> None:
+    async def emit(self, event: str, payload: dict[str, Any], op_id: str | None = None) -> None:
         """
         发布事件到指定的订阅者。
 
@@ -88,13 +89,13 @@ class EventBroker:
             "op_id": op_id,
             "payload": payload or {},
         }
-        
+
         if op_id:
             # 缓存事件到缓冲区（仅缓存 LLM 相关事件）
             if event.startswith("llm."):
                 buffer = self._get_event_buffer(op_id)
                 buffer.append(data)
-            
+
             # 发送给当前订阅者
             subscribers = self._get_subscribers(op_id)
             for q in list(subscribers):
@@ -104,7 +105,7 @@ class EventBroker:
                 for q in list(subs):
                     await self._safe_put(q, data)
 
-    async def _safe_put(self, q: asyncio.Queue, data: Dict[str, Any]) -> None:
+    async def _safe_put(self, q: asyncio.Queue, data: dict[str, Any]) -> None:
         """
         安全地将数据放入队列。
 
@@ -122,7 +123,7 @@ class EventBroker:
         except Exception:
             pass
 
-    async def subscribe(self, op_id: str, replay_buffered: bool = True) -> AsyncIterator[Dict[str, Any]]:
+    async def subscribe(self, op_id: str, replay_buffered: bool = True) -> AsyncIterator[dict[str, Any]]:
         """
         订阅指定操作ID的事件流。
 
@@ -138,7 +139,7 @@ class EventBroker:
         """
         q: asyncio.Queue = asyncio.Queue(maxsize=1000)
         self._get_subscribers(op_id).append(q)
-        
+
         try:
             # 首先回放缓冲区中的历史事件
             if replay_buffered:
@@ -146,7 +147,7 @@ class EventBroker:
                 if len(buffer) > 0:
                     for item in list(buffer):
                         yield item
-            
+
             # 然后持续监听新事件
             while True:
                 item = await q.get()
@@ -159,7 +160,7 @@ class EventBroker:
             except ValueError:
                 pass
 
-    def get_buffered_events(self, op_id: str) -> List[Dict[str, Any]]:
+    def get_buffered_events(self, op_id: str) -> list[dict[str, Any]]:
         """
         获取指定操作ID的缓冲事件列表。
 

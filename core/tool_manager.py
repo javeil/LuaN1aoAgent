@@ -5,10 +5,10 @@ Tool Manager for LuaN1ao Agent
 """
 
 import json
-import time
-import sys
 import os
-from typing import Dict, List, Any, Optional
+import sys
+import time
+from typing import Any
 
 # 添加项目根目录到Python路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -71,7 +71,7 @@ class ToolManager:
             print(f"刷新工具缓存失败: {e}")
             # 如果刷新失败，保持旧缓存
 
-    def get_all_tools(self) -> Dict[str, List[Dict]]:
+    def get_all_tools(self) -> dict[str, list[dict]]:
         """
         获取所有工具信息 (同步方法，返回缓存)
 
@@ -80,7 +80,7 @@ class ToolManager:
         """
         return self._tools_cache
 
-    def get_enabled_tools(self) -> Dict[str, List[Dict]]:
+    def get_enabled_tools(self) -> dict[str, list[dict]]:
         """
         获取启用的工具
 
@@ -103,7 +103,7 @@ class ToolManager:
 
         return enabled_tools
 
-    def get_enabled_tool_names(self) -> List[str]:
+    def get_enabled_tool_names(self) -> list[str]:
         """获取所有启用工具的名称列表"""
         enabled_tools = self.get_enabled_tools()
         tool_names = []
@@ -131,7 +131,7 @@ class ToolManager:
         tool_id = f"{server_name}.{tool_name}"
         return tool_id not in self._disabled_tools
 
-    def format_tool_documentation(self, tool_info: Dict[str, Any], server_name: str = "") -> str:
+    def format_tool_documentation(self, tool_info: dict[str, Any], server_name: str = "") -> str:
         """
         格式化单个工具的文档
 
@@ -211,7 +211,7 @@ class ToolManager:
 
         return "\n".join(doc_lines)
 
-    def get_tool_info(self, tool_name: str, server_name: str = None) -> Optional[Dict[str, Any]]:
+    def get_tool_info(self, tool_name: str, server_name: str = None) -> dict[str, Any] | None:
         """
         获取特定工具的详细信息
 
@@ -235,7 +235,7 @@ class ToolManager:
 
         return None
 
-    def get_tools_summary(self) -> Dict[str, Any]:
+    def get_tools_summary(self) -> dict[str, Any]:
         """
         获取工具摘要信息
 

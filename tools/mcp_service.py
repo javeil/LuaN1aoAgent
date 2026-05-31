@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 MCP服务主框架 - 基于FastMCP实现的安全工具集成层.
 
@@ -19,30 +18,30 @@ MCP服务主框架 - 基于FastMCP实现的安全工具集成层.
 
 import asyncio
 import json
-import subprocess
-import time
 import logging
+import os
+import random
 import signal
+import socket
+import subprocess
+import sys
 import tempfile
 import textwrap
-import random
-import socket
-import uuid
-from datetime import datetime
-from typing import Dict, Any, List, Optional
-from http.server import BaseHTTPRequestHandler, HTTPServer
-import sys
-import os
 import threading
+import time
+import uuid
 from collections import deque
+from datetime import datetime
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import Any
+
 import httpx
-import requests
 
 # Add project root to sys.path to allow imports from conf
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 try:
-    from conf.config import SCENARIO_MODE, KNOWLEDGE_SERVICE_URL
+    from conf.config import KNOWLEDGE_SERVICE_URL, SCENARIO_MODE
 except ImportError:
     # Fallback defaults if config cannot be loaded
     SCENARIO_MODE = "general"
@@ -59,7 +58,7 @@ try:
             from fastmcp import FastMCP
         except ImportError:
             FastMCP = None
-            
+
     from mcp.server.lowlevel import Server
 except ImportError as e:
     # 如果导入失败，创建一个伪造的 mcp_server_module 以避免立即崩溃，
@@ -106,9 +105,9 @@ elif Server:
 else:
     # Fallback or error if neither is found
     if mcp_server_module and hasattr(mcp_server_module, "FastMCP"):
-        MCPServerClass = getattr(mcp_server_module, "FastMCP")
+        MCPServerClass = mcp_server_module.FastMCP
     elif mcp_server_module and hasattr(mcp_server_module, "Server"):
-        MCPServerClass = getattr(mcp_server_module, "Server")
+        MCPServerClass = mcp_server_module.Server
 
 if MCPServerClass is None:
     raise ImportError("无法找到可用的 MCP Server 类 (FastMCP 或 Server)。请确保安装了 'mcp' 或 'fastmcp'。")
@@ -121,7 +120,7 @@ _httpx_client = httpx.AsyncClient(verify=False)  # 忽略SSL证书验证
 
 
 _THINK_HISTORY_LIMIT = 50
-_think_history: deque[Dict[str, Any]] = deque(maxlen=_THINK_HISTORY_LIMIT)
+_think_history: deque[dict[str, Any]] = deque(maxlen=_THINK_HISTORY_LIMIT)
 
 _STREAM_CHUNK_SIZE = 4096
 _SHELL_OUTPUT_LIMIT = int(os.environ.get("MCP_SHELL_OUTPUT_LIMIT", 2 * 1024 * 1024))
@@ -211,7 +210,7 @@ def _sync_httpx_cookies(cookies):
 def think(
     analysis: str,
     problem: str,
-    reasoning_steps: List[str],
+    reasoning_steps: list[str],
     conclusion: str,
 ) -> str:
     """
@@ -254,7 +253,7 @@ def get_llm_client():
     if _llm_client is None:
         try:
             from llm.llm_client import LLMClient
-        except ImportError as e:
+        except ImportError:
             # 如果相对导入失败,尝试绝对导入
             import sys
             from pathlib import Path
@@ -286,7 +285,7 @@ def get_llm_client():
                         f"当前 sys.path: {sys.path}. "
                         f"Fallback error: {fallback_error}"
                     )
-        
+
         _llm_client = LLMClient()
     return _llm_client
 
@@ -332,7 +331,7 @@ def complete_mission(reason: str, evidence: str, task_id: str) -> str:
             {"success": True, "message": "任务完成信号已发送。终止文件中已记录理由和证据。"}, ensure_ascii=False
         )
 
-    except (OSError, IOError) as e:
+    except OSError as e:
         logger.error(f"文件写入错误: {e}")
         return json.dumps({"success": False, "error": f"无法写入终止文件: {e}"}, ensure_ascii=False)
     except Exception as e:
@@ -341,7 +340,7 @@ def complete_mission(reason: str, evidence: str, task_id: str) -> str:
 
 
 @mcp.tool()
-def formulate_hypotheses(hypotheses: List[Dict[str, Any]]) -> str:
+def formulate_hypotheses(hypotheses: list[dict[str, Any]]) -> str:
     """
     提出假设工具 (元认知工具)。用于在陷入僵局时，系统性地提出新的攻击可能性。
     使用时机和范例请参考主提示词中的“指导原则”部分。
@@ -367,7 +366,7 @@ def formulate_hypotheses(hypotheses: List[Dict[str, Any]]) -> str:
 
 
 @mcp.tool()
-def reflect_on_failure(failed_action: Dict[str, Any], error_message: str) -> str:
+def reflect_on_failure(failed_action: dict[str, Any], error_message: str) -> str:
     """
     失败反思工具 (元认知工具)。用于在动作失败后进行结构化的根因分析。
     使用时机和范例请参考主提示词中的“指导原则”部分。
@@ -583,16 +582,16 @@ async def distill_knowledge(insight_summary: str) -> str:
     try:
         llm = get_llm_client()
         from core.skill_distiller import SkillDistiller
-        
+
         # We run the distiller inline since it handles file writing directly
         distiller = SkillDistiller(llm_client=llm)
         await distiller.distill_and_update({"manual_insight": insight_summary})
-        
+
         return json.dumps({
-            "success": True, 
+            "success": True,
             "message": "知识已成功送入蒸馏器，相应的技能文档已更新或创建。"
         }, ensure_ascii=False)
-        
+
     except Exception as e:
         logger.exception("distill_knowledge tool execution failed")
         return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
@@ -621,43 +620,44 @@ async def web_search(query: str, num_results: int = 5) -> str:
         except ImportError:
             # Fallback to pure httpx/bs4 scraping of DDG HTML if library is missing
             import urllib.parse
+
             from bs4 import BeautifulSoup
-            
+
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
             url = "https://html.duckduckgo.com/html/"
             data = {"q": query}
-            
+
             resp = await _httpx_client.post(url, headers=headers, data=data, follow_redirects=True, timeout=15)
-            
+
             soup = BeautifulSoup(resp.text, 'html.parser')
             results = []
-            
+
             for div in soup.find_all('div', class_='result'):
                 if len(results) >= num_results:
                     break
-                    
+
                 a_tag = div.find('a', class_='result__url')
                 if not a_tag:
                     continue
-                    
+
                 link = a_tag.get('href')
                 if link and 'uddg=' in link:
                     link = urllib.parse.unquote(link.split('uddg=')[1].split('&')[0])
-                    
+
                 snippet_elem = div.find('a', class_='result__snippet')
                 snippet = snippet_elem.text.strip() if snippet_elem else ""
-                
+
                 title_elem = div.find('h2', class_='result__title')
                 title = title_elem.text.strip() if title_elem else ""
-                
+
                 if link and title:
                     results.append({"title": title, "body": snippet, "href": link})
-                
+
             if not results:
                 return json.dumps({"success": False, "error": "Search returned no results or was blocked by anti-bot. Try tweaking the query or installing 'duckduckgo-search' package via pip."}, ensure_ascii=False)
-                
+
             return json.dumps({"success": True, "query": query, "results": results}, ensure_ascii=False)
-            
+
     except Exception as e:
         logger.exception("web_search tool execution failed")
         return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
@@ -901,7 +901,7 @@ async def python_exec(script: str, timeout: int = _PYTHON_EXEC_TIMEOUT, max_outp
                 }
 
                 if os.path.exists(result_path):
-                    with open(result_path, "r", encoding="utf-8") as f:
+                    with open(result_path, encoding="utf-8") as f:
                         child_result = json.load(f)
                     result.update({k: v for k, v in child_result.items() if k != "cookies"})
                     if result.get("success"):
@@ -956,29 +956,29 @@ async def sqlmap_tool(
         JSON string containing the execution result (stdout/stderr).
     """
     cmd = ["sqlmap"]
-    
+
     if url:
         cmd.extend(["-u", url])
     elif raw_request_file:
         cmd.extend(["-r", raw_request_file])
     else:
         return json.dumps({"success": False, "error": "Either 'url' or 'raw_request_file' must be provided."}, ensure_ascii=False)
-        
+
     # Basic non-interactive settings
     cmd.extend(["--batch", "--random-agent"])
-    
+
     if tamper:
         cmd.extend(["--tamper", tamper])
-    
+
     if level and 1 <= level <= 5:
         cmd.extend(["--level", str(level)])
-    
+
     if risk and 1 <= risk <= 3:
         cmd.extend(["--risk", str(risk)])
-        
+
     if dbms:
         cmd.extend(["--dbms", dbms])
-        
+
     if extra_args:
         # Simple splitting, be careful with quotes in extra_args if manually passed
         # Ideally, we should use shlex.split but we'll keep it simple for now or assume lists
@@ -997,9 +997,9 @@ async def sqlmap_tool(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        
+
         stdout, stderr = await process.communicate()
-        
+
         return json.dumps({
             "success": True if process.returncode == 0 else False,
             "command": " ".join(cmd),
@@ -1007,7 +1007,7 @@ async def sqlmap_tool(
             "stderr": stderr.decode(errors='replace'),
             "returncode": process.returncode
         }, ensure_ascii=False)
-        
+
     except FileNotFoundError:
         return json.dumps({
             "success": False,
@@ -1032,7 +1032,7 @@ async def dirsearch_scan(url: str, extensions: str = "php,html,js,txt", extra_ar
         "--recursive-level": "-r",  # 旧版本使用 --recursive-level N，新版本使用 -r 或 --max-recursion-depth
         "--recursion-level": "-r",
     }
-    
+
     # 处理 extra_args，移除不兼容参数并记录警告
     filtered_args = []
     if extra_args:
@@ -1054,7 +1054,7 @@ async def dirsearch_scan(url: str, extensions: str = "php,html,js,txt", extra_ar
             if not incompatible:
                 filtered_args.append(arg)
             i += 1
-    
+
     cmd = f"dirsearch -u {url} -e {extensions} -q"
     if filtered_args:
         cmd += " " + " ".join(filtered_args)
@@ -1063,7 +1063,7 @@ async def dirsearch_scan(url: str, extensions: str = "php,html,js,txt", extra_ar
     try:
         process = await asyncio.create_subprocess_shell(
             cmd,
-            stdout=asyncio.subprocess.PIPE, 
+            stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT
         )
 
@@ -1081,14 +1081,14 @@ async def dirsearch_scan(url: str, extensions: str = "php,html,js,txt", extra_ar
         if return_code != 0:
             error_type = "RUNTIME"
             fix_suggestion = "Check the command's arguments and permissions."
-            
+
             if "no such option" in full_output.lower() or "unrecognized arguments" in full_output.lower():
                 error_type = "INVALID_ARGS"
                 fix_suggestion = "Some arguments are not supported by the installed dirsearch version. Try without extra_args."
             elif "not found" in full_output.lower():
                 error_type = "MISSING_TOOL"
                 fix_suggestion = "Install dirsearch or use alternative directory scanning methods."
-            
+
             return json.dumps(
                 {
                     "success": False,
@@ -1341,7 +1341,7 @@ async def concurrency_test(
     :param concurrent_count: Number of concurrent requests (default 10, max 50).
     :return: JSON report of results.
     """
-    
+
     # 1. Input Validation
     if concurrent_count > 50:
         return json.dumps({"success": False, "error": "concurrent_count limit is 50 to prevent DoS."})
@@ -1408,7 +1408,7 @@ async def concurrency_test(
     status_counts = {}
     length_counts = {}
     errors = 0
-    
+
     for r in results:
         if "error" in r:
             errors += 1
@@ -1426,7 +1426,7 @@ async def concurrency_test(
         "errors": errors,
         "status_distribution": status_counts,
         "length_distribution": length_counts,
-        "detailed_results_sample": results[:5] 
+        "detailed_results_sample": results[:5]
     }, ensure_ascii=False, indent=2)
 
 
@@ -1436,7 +1436,7 @@ async def concurrency_test(
 
 class PayloadRequestHandler(BaseHTTPRequestHandler):
     """自定义请求处理器，根据配置的路由返回 payload"""
-    
+
     def log_message(self, format, *args):
         """记录请求到服务器的 request_log"""
         log_entry = {
@@ -1449,33 +1449,33 @@ class PayloadRequestHandler(BaseHTTPRequestHandler):
             self.server.request_log.append(log_entry)
         # 同时打印到控制台
         logger.info(f"[PayloadServer] {self.client_address[0]} - {self.command} {self.path}")
-    
+
     def do_GET(self):
         self._handle_request()
-    
+
     def do_POST(self):
         self._handle_request()
-    
+
     def do_HEAD(self):
         self._handle_request(send_body=False)
-    
+
     def _handle_request(self, send_body=True):
         """处理请求，根据路由配置返回对应内容"""
         routes = getattr(self.server, 'routes', {})
-        
+
         # 查找匹配的路由 (精确匹配路径部分，忽略 query string)
         path_without_query = self.path.split('?')[0]
-        
+
         if path_without_query in routes:
             route = routes[path_without_query]
             content = route.get('content', '')
             content_type = route.get('content_type', 'text/plain')
-            
+
             self.send_response(200)
             self.send_header('Content-Type', content_type)
             self.send_header('Content-Length', len(content.encode('utf-8')))
             self.end_headers()
-            
+
             if send_body:
                 self.wfile.write(content.encode('utf-8'))
         else:
@@ -1489,29 +1489,29 @@ class PayloadRequestHandler(BaseHTTPRequestHandler):
 
 class PayloadServer:
     """单个 Payload 服务器实例"""
-    
-    def __init__(self, server_id: str, port: int, routes: Dict[str, Dict], host: str = "0.0.0.0"):
+
+    def __init__(self, server_id: str, port: int, routes: dict[str, dict], host: str = "0.0.0.0"):
         self.server_id = server_id
         self.port = port
         self.host = host
         self.routes = routes
-        self.request_log: List[Dict] = []
-        self.httpd: Optional[HTTPServer] = None
-        self.thread: Optional[threading.Thread] = None
-        self.started_at: Optional[datetime] = None
+        self.request_log: list[dict] = []
+        self.httpd: HTTPServer | None = None
+        self.thread: threading.Thread | None = None
+        self.started_at: datetime | None = None
         self.stopped = False
-    
+
     def start(self):
         """启动服务器"""
         self.httpd = HTTPServer((self.host, self.port), PayloadRequestHandler)
         self.httpd.routes = self.routes
         self.httpd.request_log = self.request_log
-        
+
         self.thread = threading.Thread(target=self._serve, daemon=True)
         self.thread.start()
         self.started_at = datetime.now()
         logger.info(f"[PayloadServer] Started server {self.server_id} on {self.host}:{self.port}")
-    
+
     def _serve(self):
         """在线程中运行服务器"""
         try:
@@ -1519,7 +1519,7 @@ class PayloadServer:
                 self.httpd.handle_request()
         except Exception as e:
             logger.error(f"[PayloadServer] Server {self.server_id} error: {e}")
-    
+
     def stop(self):
         """停止服务器"""
         self.stopped = True
@@ -1527,28 +1527,28 @@ class PayloadServer:
             self.httpd.shutdown()
             self.httpd.server_close()
         logger.info(f"[PayloadServer] Stopped server {self.server_id}")
-    
-    def get_logs(self) -> List[Dict]:
+
+    def get_logs(self) -> list[dict]:
         """获取请求日志"""
         return self.request_log.copy()
 
 
 class PayloadServerManager:
     """管理所有 Payload 服务器实例"""
-    
+
     # 端口范围
     PORT_RANGE_START = 18000
     PORT_RANGE_END = 18999
-    
+
     def __init__(self):
-        self.servers: Dict[str, PayloadServer] = {}
+        self.servers: dict[str, PayloadServer] = {}
         self._lock = threading.Lock()
-    
+
     def _find_available_port(self) -> int:
         """在指定范围内随机查找一个可用端口"""
         ports = list(range(self.PORT_RANGE_START, self.PORT_RANGE_END + 1))
         random.shuffle(ports)
-        
+
         for port in ports:
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -1556,9 +1556,9 @@ class PayloadServerManager:
                     return port
             except OSError:
                 continue
-        
+
         raise RuntimeError(f"No available port found in range {self.PORT_RANGE_START}-{self.PORT_RANGE_END}")
-    
+
     def _get_local_ip(self) -> str:
         """获取本机在 Docker 网络中的 IP"""
         try:
@@ -1568,8 +1568,8 @@ class PayloadServerManager:
                 return s.getsockname()[0]
         except Exception:
             return "127.0.0.1"
-    
-    def start_server(self, routes: List[Dict[str, str]], port: int = None) -> Dict[str, Any]:
+
+    def start_server(self, routes: list[dict[str, str]], port: int = None) -> dict[str, Any]:
         """
         启动一个新的 Payload 服务器
         
@@ -1584,10 +1584,10 @@ class PayloadServerManager:
             # 选择端口
             if port is None:
                 port = self._find_available_port()
-            
+
             # 生成服务器 ID
             server_id = f"ps_{uuid.uuid4().hex[:8]}"
-            
+
             # 转换路由格式
             routes_dict = {}
             for route in routes:
@@ -1596,15 +1596,15 @@ class PayloadServerManager:
                     'content': route.get('content', ''),
                     'content_type': route.get('content_type', 'text/plain')
                 }
-            
+
             # 创建并启动服务器
             server = PayloadServer(server_id, port, routes_dict)
             server.start()
-            
+
             self.servers[server_id] = server
-            
+
             local_ip = self._get_local_ip()
-            
+
             return {
                 "status": "started",
                 "server_id": server_id,
@@ -1613,36 +1613,36 @@ class PayloadServerManager:
                 "routes_configured": list(routes_dict.keys()),
                 "message": f"Payload server started. Use {local_ip}:{port} as your callback address."
             }
-    
-    def stop_server(self, server_id: str) -> Dict[str, Any]:
+
+    def stop_server(self, server_id: str) -> dict[str, Any]:
         """停止指定的服务器"""
         with self._lock:
             if server_id not in self.servers:
                 return {"status": "error", "message": f"Server {server_id} not found"}
-            
+
             server = self.servers[server_id]
             server.stop()
             del self.servers[server_id]
-            
+
             return {"status": "stopped", "server_id": server_id}
-    
-    def get_logs(self, server_id: str) -> Dict[str, Any]:
+
+    def get_logs(self, server_id: str) -> dict[str, Any]:
         """获取服务器的请求日志"""
         with self._lock:
             if server_id not in self.servers:
                 return {"status": "error", "message": f"Server {server_id} not found"}
-            
+
             server = self.servers[server_id]
             logs = server.get_logs()
-            
+
             return {
                 "status": "success",
                 "server_id": server_id,
                 "request_count": len(logs),
                 "requests": logs
             }
-    
-    def list_servers(self) -> Dict[str, Any]:
+
+    def list_servers(self) -> dict[str, Any]:
         """列出所有活动的服务器"""
         with self._lock:
             servers_info = []
@@ -1666,7 +1666,7 @@ _payload_server_manager = PayloadServerManager()
 
 @mcp.tool()
 async def start_payload_server(
-    routes: List[Dict[str, str]],
+    routes: list[dict[str, str]],
     port: int = None
 ) -> str:
     """
@@ -1827,17 +1827,17 @@ async def search_exploit(
         "sources_checked": [],
         "vulnerabilities": []
     }
-    
+
     try:
         # === Source 1: NVD API (免费，无需 API Key) ===
         nvd_results = await _search_nvd(keywords, cve_id, max_results)
         results["sources_checked"].append("NVD")
         results["vulnerabilities"].extend(nvd_results)
-        
+
         # === Source 2: Exploit-DB 网页搜索 ===
         edb_results = await _search_exploitdb(keywords, cve_id, max_results)
         results["sources_checked"].append("Exploit-DB")
-        
+
         # 合并 Exploit-DB 结果到已有 CVE 或添加为新条目
         for edb in edb_results:
             matched = False
@@ -1860,20 +1860,20 @@ async def search_exploit(
                     "edb_id": edb.get("edb_id"),
                     "source": "Exploit-DB"
                 })
-        
+
         results["total_found"] = len(results["vulnerabilities"])
-        
+
     except Exception as e:
         results["status"] = "partial_error"
         results["error"] = str(e)
-    
+
     return json.dumps(results, ensure_ascii=False, indent=2)
 
 
-async def _search_nvd(keywords: str, cve_id: str, max_results: int) -> List[Dict]:
+async def _search_nvd(keywords: str, cve_id: str, max_results: int) -> list[dict]:
     """查询 NVD API"""
     vulnerabilities = []
-    
+
     try:
         if cve_id:
             url = f"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve_id}"
@@ -1881,25 +1881,25 @@ async def _search_nvd(keywords: str, cve_id: str, max_results: int) -> List[Dict
             # 使用关键词搜索
             encoded_keywords = keywords.replace(" ", "+")
             url = f"https://services.nvd.nist.gov/rest/json/cves/2.0?keywordSearch={encoded_keywords}&resultsPerPage={max_results}"
-        
+
         response = await _httpx_client.get(url, timeout=30.0)
-        
+
         if response.status_code == 200:
             data = response.json()
-            
+
             for item in data.get("vulnerabilities", [])[:max_results]:
                 cve = item.get("cve", {})
                 cve_meta = cve.get("id", "Unknown")
-                
+
                 # 获取描述
                 descriptions = cve.get("descriptions", [])
                 desc = next((d["value"] for d in descriptions if d.get("lang") == "en"), "No description")
-                
+
                 # 获取严重程度
                 metrics = cve.get("metrics", {})
                 severity = "UNKNOWN"
                 cvss_score = None
-                
+
                 if "cvssMetricV31" in metrics:
                     cvss_data = metrics["cvssMetricV31"][0].get("cvssData", {})
                     severity = cvss_data.get("baseSeverity", "UNKNOWN")
@@ -1908,10 +1908,10 @@ async def _search_nvd(keywords: str, cve_id: str, max_results: int) -> List[Dict
                     cvss_data = metrics["cvssMetricV2"][0].get("cvssData", {})
                     cvss_score = cvss_data.get("baseScore")
                     severity = "HIGH" if cvss_score and cvss_score >= 7.0 else "MEDIUM" if cvss_score and cvss_score >= 4.0 else "LOW"
-                
+
                 # 获取参考链接
                 references = [ref.get("url") for ref in cve.get("references", [])][:5]
-                
+
                 # 获取受影响版本
                 affected = []
                 for config in cve.get("configurations", []):
@@ -1923,7 +1923,7 @@ async def _search_nvd(keywords: str, cve_id: str, max_results: int) -> List[Dict
                                     affected.append(f"<= {match['versionEndIncluding']}")
                                 elif "versionEndExcluding" in match:
                                     affected.append(f"< {match['versionEndExcluding']}")
-                
+
                 vulnerabilities.append({
                     "cve_id": cve_meta,
                     "description": desc[:500],  # 截断长描述
@@ -1934,17 +1934,17 @@ async def _search_nvd(keywords: str, cve_id: str, max_results: int) -> List[Dict
                     "exploit_available": False,
                     "source": "NVD"
                 })
-                
+
     except Exception as e:
         logger.warning(f"NVD search failed: {e}")
-    
+
     return vulnerabilities
 
 
-async def _search_exploitdb(keywords: str, cve_id: str, max_results: int) -> List[Dict]:
+async def _search_exploitdb(keywords: str, cve_id: str, max_results: int) -> list[dict]:
     """使用 searchsploit CLI 搜索 Exploit-DB"""
     exploits = []
-    
+
     try:
         # 构建搜索参数
         if cve_id:
@@ -1952,7 +1952,7 @@ async def _search_exploitdb(keywords: str, cve_id: str, max_results: int) -> Lis
         else:
             # 分割关键词
             search_args = ["searchsploit", "-j"] + keywords.split()
-        
+
         # 执行命令 (offload 阻塞调用到线程, 避免卡死事件循环)
         result = await asyncio.to_thread(
             subprocess.run,
@@ -1961,21 +1961,21 @@ async def _search_exploitdb(keywords: str, cve_id: str, max_results: int) -> Lis
             text=True,
             timeout=30
         )
-        
+
         if result.returncode == 0 and result.stdout.strip():
             try:
                 data = json.loads(result.stdout)
-                
+
                 for item in data.get("RESULTS_EXPLOIT", [])[:max_results]:
                     title = item.get("Title", "")
                     path = item.get("Path", "")
                     edb_id = item.get("EDB-ID", "")
-                    
+
                     # 从标题或路径提取 CVE
                     import re
                     cve_match = re.search(r'CVE-\d{4}-\d+', title, re.I)
                     exploit_cve = cve_match.group(0).upper() if cve_match else None
-                    
+
                     exploits.append({
                         "edb_id": str(edb_id),
                         "title": title,
@@ -1983,12 +1983,12 @@ async def _search_exploitdb(keywords: str, cve_id: str, max_results: int) -> Lis
                         "url": f"https://www.exploit-db.com/exploits/{edb_id}" if edb_id else None,
                         "cve_id": exploit_cve
                     })
-                    
+
             except json.JSONDecodeError:
                 logger.warning(f"searchsploit JSON parse error: {result.stdout[:200]}")
         else:
             logger.info(f"searchsploit returned no results or error: {result.stderr}")
-                
+
     except FileNotFoundError:
         logger.warning("searchsploit not found, falling back to web search")
         # 回退到网页搜索
@@ -1997,56 +1997,56 @@ async def _search_exploitdb(keywords: str, cve_id: str, max_results: int) -> Lis
         logger.warning("searchsploit timed out")
     except Exception as e:
         logger.warning(f"searchsploit failed: {e}")
-    
+
     return exploits
 
 
-async def _search_exploitdb_web(keywords: str, cve_id: str, max_results: int) -> List[Dict]:
+async def _search_exploitdb_web(keywords: str, cve_id: str, max_results: int) -> list[dict]:
     """Web fallback: 搜索 Exploit-DB 网页 (当 searchsploit 不可用时)"""
     exploits = []
-    
+
     try:
         if cve_id:
             search_query = cve_id
         else:
             search_query = keywords
-        
+
         encoded_query = search_query.replace(" ", "+")
         url = f"https://www.exploit-db.com/search?q={encoded_query}"
-        
+
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "text/html,application/xhtml+xml"
         }
-        
+
         response = await _httpx_client.get(url, headers=headers, timeout=30.0, follow_redirects=True)
-        
+
         if response.status_code == 200:
             html = response.text
             import re
             exploit_pattern = r'href="(/exploits/(\d+))"[^>]*>([^<]+)</a>'
             matches = re.findall(exploit_pattern, html)
-            
+
             seen_ids = set()
             for match in matches[:max_results]:
                 path, edb_id, title = match
                 if edb_id in seen_ids:
                     continue
                 seen_ids.add(edb_id)
-                
+
                 cve_match = re.search(r'CVE-\d{4}-\d+', title, re.I)
                 exploit_cve = cve_match.group(0).upper() if cve_match else None
-                
+
                 exploits.append({
                     "edb_id": edb_id,
                     "title": title.strip(),
                     "url": f"https://www.exploit-db.com{path}",
                     "cve_id": exploit_cve
                 })
-                
+
     except Exception as e:
         logger.warning(f"Exploit-DB web search failed: {e}")
-    
+
     return exploits
 
 
@@ -2085,7 +2085,7 @@ async def view_exploit(
         "edb_id": edb_id,
         "path": path
     }
-    
+
     try:
         if edb_id:
             # 使用 searchsploit -p 获取路径信息 (offload 阻塞调用到线程)
@@ -2096,25 +2096,25 @@ async def view_exploit(
                 text=True,
                 timeout=10
             )
-            
+
             if path_result.returncode == 0:
                 output = path_result.stdout
-                
+
                 # 解析输出获取标题和路径
                 # 格式: "Exploit: Title\n    URL: ...\n   Path: /path/to/file\n..."
                 import re
                 title_match = re.search(r'Exploit:\s*(.+)', output)
                 path_match = re.search(r'Path:\s*(.+)', output)
-                
+
                 if title_match:
                     result["title"] = title_match.group(1).strip()
                 if path_match:
                     exploit_path = path_match.group(1).strip()
                     result["path"] = exploit_path
-                    
+
                     # 读取文件内容
                     if os.path.exists(exploit_path):
-                        with open(exploit_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        with open(exploit_path, encoding='utf-8', errors='ignore') as f:
                             lines = f.readlines()
                             content = ''.join(lines[:max_lines])
                             if len(lines) > max_lines:
@@ -2122,7 +2122,7 @@ async def view_exploit(
                             result["content"] = content
                             result["total_lines"] = len(lines)
                             result["file_type"] = exploit_path.split('.')[-1] if '.' in exploit_path else "txt"
-                            
+
                             # 提取关键信息
                             result["key_info"] = _extract_exploit_key_info(content)
                     else:
@@ -2131,11 +2131,11 @@ async def view_exploit(
             else:
                 result["status"] = "error"
                 result["error"] = f"searchsploit -p failed: {path_result.stderr}"
-                
+
         elif path:
             # 直接读取指定路径
             if os.path.exists(path):
-                with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                with open(path, encoding='utf-8', errors='ignore') as f:
                     lines = f.readlines()
                     content = ''.join(lines[:max_lines])
                     if len(lines) > max_lines:
@@ -2150,48 +2150,48 @@ async def view_exploit(
         else:
             result["status"] = "error"
             result["error"] = "Must provide either edb_id or path"
-            
+
     except FileNotFoundError:
         result["status"] = "error"
         result["error"] = "searchsploit not installed. Install with: apt install exploitdb"
     except Exception as e:
         result["status"] = "error"
         result["error"] = str(e)
-    
+
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
-def _extract_exploit_key_info(content: str) -> Dict[str, Any]:
+def _extract_exploit_key_info(content: str) -> dict[str, Any]:
     """从 exploit 代码中提取关键信息"""
     import re
     key_info = {}
-    
+
     # 提取 URL 模式
     url_patterns = re.findall(r'["\']/([\w\-/]+\.php)["\']', content)
     if url_patterns:
         key_info["vulnerable_endpoints"] = list(set(url_patterns))[:5]
-    
+
     # 提取参数名
     param_patterns = re.findall(r'["\'](\w+)["\']:\s*["\']?\$?\{?', content)
     if param_patterns:
         key_info["parameters"] = list(set(param_patterns))[:10]
-    
+
     # 提取 HTTP 方法
     if 'requests.post' in content.lower() or 'POST' in content:
         key_info["http_method"] = "POST"
     elif 'requests.get' in content.lower() or 'GET' in content:
         key_info["http_method"] = "GET"
-    
+
     # 提取命令执行函数
     dangerous_funcs = re.findall(r'\b(system|exec|passthru|shell_exec|popen|proc_open|eval)\s*\(', content)
     if dangerous_funcs:
         key_info["dangerous_functions"] = list(set(dangerous_funcs))
-    
+
     # 提取 CVE
     cve_match = re.search(r'CVE-\d{4}-\d+', content, re.I)
     if cve_match:
         key_info["cve"] = cve_match.group(0).upper()
-    
+
     return key_info
 
 
@@ -2254,7 +2254,7 @@ async def nuclei_scan(
             "timeout": timeout
         }
     }
-    
+
     try:
         # 构建 nuclei 命令
         cmd = [
@@ -2266,23 +2266,23 @@ async def nuclei_scan(
             "-concurrency", str(concurrency),
             "-timeout", "10",  # 单个请求超时
         ]
-        
+
         if templates:
             cmd.extend(["-t", templates])
-        
+
         if severity:
             cmd.extend(["-severity", severity])
-        
+
         if tags:
             cmd.extend(["-tags", tags])
-        
+
         # 异步执行，带超时
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        
+
         try:
             stdout, stderr = await asyncio.wait_for(
                 process.communicate(),
@@ -2295,11 +2295,11 @@ async def nuclei_scan(
             result["error"] = f"Scan timed out after {timeout} seconds"
             result["message"] = "Consider using more specific templates, tags, or severity filters"
             return json.dumps(result, ensure_ascii=False, indent=2)
-        
+
         # 解析 JSONL 输出
         findings = []
         raw_lines = stdout.decode('utf-8', errors='ignore').strip().split('\n')
-        
+
         for line in raw_lines:
             if not line.strip():
                 continue
@@ -2320,29 +2320,29 @@ async def nuclei_scan(
             except json.JSONDecodeError:
                 # 可能是非 JSON 输出（如进度信息）
                 continue
-        
+
         result["findings"] = findings
         result["summary"] = {
             "total_findings": len(findings),
             "by_severity": {}
         }
-        
+
         # 按严重程度统计
         for f in findings:
             sev = f.get("severity", "unknown")
             result["summary"]["by_severity"][sev] = result["summary"]["by_severity"].get(sev, 0) + 1
-        
+
         # 如果没有任何发现
         if not findings and stderr:
             result["stderr"] = stderr.decode('utf-8', errors='ignore')[:500]
-        
+
     except FileNotFoundError:
         result["status"] = "error"
         result["error"] = "nuclei not installed. Install with: go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"
     except Exception as e:
         result["status"] = "error"
         result["error"] = str(e)
-    
+
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
@@ -2378,42 +2378,42 @@ async def nuclei_list_templates(
         "status": "success",
         "templates": []
     }
-    
+
     try:
         # 构建命令
         cmd = ["nuclei", "-tl"]  # template list
-        
+
         if tags:
             cmd.extend(["-tags", tags])
-        
+
         if severity:
             cmd.extend(["-severity", severity])
-        
+
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        
+
         stdout, stderr = await asyncio.wait_for(
             process.communicate(),
             timeout=30
         )
-        
+
         templates = stdout.decode('utf-8', errors='ignore').strip().split('\n')
-        
+
         # 过滤搜索关键词
         if search:
             search_terms = search.lower().split()
             templates = [
-                t for t in templates 
+                t for t in templates
                 if all(term in t.lower() for term in search_terms)
             ]
-        
+
         result["templates"] = templates[:limit]
         result["total_matched"] = len(templates)
         result["showing"] = min(limit, len(templates))
-        
+
     except FileNotFoundError:
         result["status"] = "error"
         result["error"] = "nuclei not installed"
@@ -2423,7 +2423,7 @@ async def nuclei_list_templates(
     except Exception as e:
         result["status"] = "error"
         result["error"] = str(e)
-    
+
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 

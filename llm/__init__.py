@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """LuaN1ao LLM客户端模块.
 
 本包提供与大语言模型(LLM)交互的统一接口，

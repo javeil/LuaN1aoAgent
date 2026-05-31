@@ -3,10 +3,10 @@
 扫描knowledge_base目录下的所有文档
 """
 
-import os
 import asyncio
-from typing import Dict, Any
+import os
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -75,7 +75,7 @@ async def _initialize_knowledge_base():
         await loop.run_in_executor(None, _initialize_knowledge_base_sync)
 
 
-async def retrieve_knowledge(query: str, top_k: int = 5) -> Dict[str, Any]:
+async def retrieve_knowledge(query: str, top_k: int = 5) -> dict[str, Any]:
     """
     从统一知识库中进行语义检索。
     扫描knowledge_base目录下的所有文档。
@@ -108,9 +108,9 @@ async def lifespan(app: FastAPI):
         await _initialize_knowledge_base()
     except Exception as e:
         print(f"⚠️ 初始化知识库时出错: {e}")
-    
+
     yield  # 服务运行期间
-    
+
     # 关闭时清理（可选）
     print("👋 知识服务正在关闭...")
 
@@ -160,8 +160,9 @@ async def get_stats():
 
 
 if __name__ == "__main__":
-    import uvicorn
     import os
+
+    import uvicorn
 
     port = int(os.getenv("KNOWLEDGE_SERVICE_PORT", "8081"))
     print(f"🚀 启动统一知识服务... (端口: {port})")

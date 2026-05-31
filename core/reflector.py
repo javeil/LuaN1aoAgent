@@ -1,21 +1,20 @@
 # core/reflector.py
 
-from datetime import datetime
-from typing import Any, List, Dict, Optional
 import json
 import re
-
-
+from datetime import datetime
+from typing import Any
 
 
 def _get_console():
     """Lazy initialization of console to avoid circular imports."""
     from core.console import console_proxy
     return console_proxy
-from llm.llm_client import LLMClient
-from core.graph_manager import GraphManager
 from rich.console import Console
+
 from core.events import broker
+from core.graph_manager import GraphManager
+from llm.llm_client import LLMClient
 
 
 def _normalize_audit_status(status: Any) -> str:
@@ -59,7 +58,7 @@ class Reflector:
         self._run_log_path = None
         self._log_dir = None
 
-    def set_log_dir(self, log_dir: Optional[str]) -> None:
+    def set_log_dir(self, log_dir: str | None) -> None:
         """
         设置日志目录路径。
 
@@ -80,11 +79,11 @@ class Reflector:
         subtask_goal: str,
         status: str,
         execution_log: str,
-        staged_causal_nodes: List[Dict],
+        staged_causal_nodes: list[dict],
         causal_graph_summary: str,
         completion_criteria: str,
-        dependency_context: Optional[List[Dict]] = None,
-        failure_patterns_summary: Dict[str, Any] = None,
+        dependency_context: list[dict] | None = None,
+        failure_patterns_summary: dict[str, Any] = None,
         *,
         reflector_context=None,
     ) -> str:
@@ -457,7 +456,7 @@ class Reflector:
 
         return " | ".join(summary) if summary else "LLM反思记录详情待完善"
 
-    def _normalize_dependency_context(self, dependency_context: Optional[List[Dict]], subtask_data: Dict) -> Optional[List[Dict]]:
+    def _normalize_dependency_context(self, dependency_context: list[dict] | None, subtask_data: dict) -> list[dict] | None:
         termination_reason = subtask_data.get("termination_reason")
         executed_steps = subtask_data.get("executed_steps")
         if dependency_context and isinstance(dependency_context, list):
@@ -498,15 +497,15 @@ class Reflector:
 仅回答 "true" 或 "false"。
 """
             messages = [{"role": "user", "content": prompt}]
-            
+
             # 使用一个专用的、轻量级的验证角色
             response, _ = await self.llm_client.send_message(messages, role="reflector_validator")
-            
+
             # 解析LLM的布尔值响应
             result_str = str(response).strip().lower()
             _get_console().print(f"🕵️  基于LLM的验证返回: [cyan]'{result_str}'[/cyan]", style="dim")
             return result_str == "true"
-            
+
         except Exception as e:
             _get_console().print(f"⚠️ 基于LLM的验证失败: {e}", style="yellow")
             return False
@@ -515,16 +514,16 @@ class Reflector:
     async def reflect(
         self,
         subtask_id: str,  # Add subtask_id as a parameter
-        subtask_data: Dict,
+        subtask_data: dict,
         status: str,
         execution_log: str,
-        proposed_changes: List[Dict],
-        staged_causal_nodes: List[Dict],
+        proposed_changes: list[dict],
+        staged_causal_nodes: list[dict],
         causal_graph_summary: str,
-        dependency_context: Optional[List[Dict]] = None,
+        dependency_context: list[dict] | None = None,
         graph_manager=None,  # Add graph_manager to access causal graph analysis
         reflector_context=None,  # 新增：Reflector上下文对象
-    ) -> Dict:
+    ) -> dict:
         """
         执行反思与审核。
 
@@ -593,7 +592,7 @@ class Reflector:
 
             # 保持对 validated_nodes 的引用，因为它们可能包含除目标产物之外的其他有用证据
             reflection_data.setdefault("causal_graph_updates", {})
-            
+
             # --- VETO LOGIC START ---
             rejected_nodes = reflection_data.get("rejected_staged_nodes", [])
             if rejected_nodes and graph_manager:
@@ -650,7 +649,7 @@ class Reflector:
                 "metrics": None,
             }
 
-    def _generate_global_reflector_prompt(self, simplified_graph: Dict[str, Any]) -> str:
+    def _generate_global_reflector_prompt(self, simplified_graph: dict[str, Any]) -> str:
         """
         生成用于全局反思的提示词，以提炼可复用的STE经验。
 
@@ -730,7 +729,7 @@ class Reflector:
 }}
 """
 
-    async def reflect_global(self, graph_manager: GraphManager) -> Dict:
+    async def reflect_global(self, graph_manager: GraphManager) -> dict:
         """
         执行全局反思，生成最高层次的战略洞见和经验总结。
 

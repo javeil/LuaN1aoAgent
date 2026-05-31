@@ -7,7 +7,6 @@ Usage:
     from conf.i18n import t
     console.print(Panel(t("halt_signal_detected"), style="bold yellow"))
 """
-import os
 from conf.config import PROMPT_LANGUAGE
 
 _STRINGS = {
@@ -105,12 +104,12 @@ def t(key: str, **kwargs) -> str:
     """
     lang = PROMPT_LANGUAGE if PROMPT_LANGUAGE in _STRINGS else "zh"
     strings = _STRINGS[lang]
-    
+
     template = strings.get(key)
     if template is None:
         # Fallback to English, then to key itself
         template = _STRINGS["en"].get(key, key)
-    
+
     if kwargs:
         try:
             return template.format(**kwargs)

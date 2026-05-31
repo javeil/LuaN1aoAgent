@@ -3,13 +3,15 @@
 定义 Planner、Executor、Reflector 之间的标准化数据结构
 """
 
-from typing import List, Dict, Any, Optional, Literal, Union
-from dataclasses import dataclass, field
 import uuid
+from dataclasses import dataclass, field
+from typing import Any, Literal, Union
 from xml.dom import Node
+
 from conf.config import PLANNER_HISTORY_WINDOW, REFLECTOR_HISTORY_WINDOW
 
-def normalize_audit_status(status: Optional[str]) -> str:
+
+def normalize_audit_status(status: str | None) -> str:
     """Normalize legacy and mixed-case audit statuses to canonical values."""
     status_text = str(status or "").strip().lower()
     mapping = {
@@ -44,8 +46,8 @@ class BaseCausalNode:
     """
 
     id: str
-    source_step_id: Optional[str]
-    traceability: Optional[str]
+    source_step_id: str | None
+    traceability: str | None
     node_type: str = field(init=False)
 
     def __post_init__(self):
@@ -76,9 +78,9 @@ class EvidenceNode(BaseCausalNode):
 
     tool_name: str
     raw_output: str
-    extracted_findings: Dict[str, Any] = field(default_factory=dict)
-    host: Optional[str] = None
-    port: Optional[int] = None
+    extracted_findings: dict[str, Any] = field(default_factory=dict)
+    host: str | None = None
+    port: int | None = None
 
     def __post_init__(self):
         super().__post_init__()
@@ -106,9 +108,9 @@ class HypothesisNode(BaseCausalNode):
     description: str
     confidence: float  # 置信度 (0.0 - 1.0)
     status: Literal["SUPPORTED", "FALSIFIED", "PENDING", "CONTRADICTED"] = "PENDING"  # 新增状态字段
-    preconditions: List[str] = field(default_factory=list)
-    potential_impact: Optional[str] = None
-    verification_steps: List[str] = field(default_factory=list)
+    preconditions: list[str] = field(default_factory=list)
+    potential_impact: str | None = None
+    verification_steps: list[str] = field(default_factory=list)
 
     def __post_init__(self):
         super().__post_init__()
@@ -131,9 +133,9 @@ class VulnerabilityNode(BaseCausalNode):
     """
 
     description: str
-    cvss_score: Optional[float] = None
-    exploitation_conditions: List[str] = field(default_factory=list)
-    known_exploits: List[str] = field(default_factory=list)
+    cvss_score: float | None = None
+    exploitation_conditions: list[str] = field(default_factory=list)
+    known_exploits: list[str] = field(default_factory=list)
 
     def __post_init__(self):
         super().__post_init__()
@@ -202,8 +204,8 @@ class AttackGoalNode(BaseCausalNode):
     ] = "other"
     target_privilege_level: str = "unknown"
     satisfaction_criteria: str = ""
-    prerequisites: List[str] = field(default_factory=list)
-    alternative_paths: List[str] = field(default_factory=list)
+    prerequisites: list[str] = field(default_factory=list)
+    alternative_paths: list[str] = field(default_factory=list)
     joint_threat_score: float = 0.0
     status: Literal["pending", "in_progress", "achieved", "blocked"] = "pending"
     attack_surface: str = "unknown"
@@ -234,7 +236,7 @@ class CausalEdge:
         "SUPPORTS", "CONTRADICTS", "REVEALS", "EXPLOITS", "MITIGATES",
         "ENABLES", "REQUIRES", "ALTERNATIVE_FOR"
     ]
-    description: Optional[str] = None
+    description: str | None = None
 
 
 # ==================================================
@@ -265,22 +267,22 @@ class IntelligenceSummary:
         ... )
     """
 
-    completed_tasks: List[Dict[str, Any]] = field(default_factory=list)
+    completed_tasks: list[dict[str, Any]] = field(default_factory=list)
     """已完成任务的简要列表，包含 id, summary"""
 
-    validated_nodes: List[Dict[str, Any]] = field(default_factory=list)
+    validated_nodes: list[dict[str, Any]] = field(default_factory=list)
     """已验证的因果节点列表（取代旧的validated_artifacts）"""
 
-    key_findings: List[str] = field(default_factory=list)
+    key_findings: list[str] = field(default_factory=list)
     """关键发现（自然语言，事实陈述）"""
 
-    blocked_tasks: List[Dict[str, Any]] = field(default_factory=list)
+    blocked_tasks: list[dict[str, Any]] = field(default_factory=list)
     """被阻塞的任务及原因，包含 id, reason"""
 
-    strategic_suggestions: Optional[str] = None
+    strategic_suggestions: str | None = None
     """可选：战略层面的观察（非指令）"""
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """转换为字典格式"""
         return {
             "completed_tasks": self.completed_tasks,
@@ -312,7 +314,7 @@ class PlanningDecision:
         ... )
     """
 
-    graph_operations: List[Dict[str, Any]]
+    graph_operations: list[dict[str, Any]]
     """图操作指令列表（ADD_NODE, UPDATE_NODE, DELETE_NODE等）"""
 
     global_mission_briefing: str
@@ -321,7 +323,7 @@ class PlanningDecision:
     reasoning: str
     """Planner 的决策理由（用于日志和调试）"""
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """转换为字典格式"""
         return {
             "graph_operations": self.graph_operations,
@@ -362,11 +364,11 @@ class DependencySummary:
     task_id: str
     description: str
     status: str
-    key_findings: List[str] = field(default_factory=list)
-    failure_reason: Optional[str] = None
-    nodes_produced: List[str] = field(default_factory=list)
+    key_findings: list[str] = field(default_factory=list)
+    failure_reason: str | None = None
+    nodes_produced: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """转换为字典格式"""
         return {
             "task_id": self.task_id,
@@ -412,7 +414,7 @@ class TaskBriefing:
     subtask_id: str
     description: str
     completion_criteria: str
-    mission_briefing: Dict[str, Any]
+    mission_briefing: dict[str, Any]
 
     # === 全局战略上下文 ===
     global_mission_briefing: str
@@ -422,17 +424,17 @@ class TaskBriefing:
     causal_graph_summary: str
     """全局因果链情报图谱的文本摘要"""
 
-    dependencies_summary: List[DependencySummary] = field(default_factory=list)
+    dependencies_summary: list[DependencySummary] = field(default_factory=list)
     """依赖任务的完整摘要（目标+结果+发现）"""
 
-    dependencies_nodes: List[Dict[str, Any]] = field(default_factory=list)
+    dependencies_nodes: list[dict[str, Any]] = field(default_factory=list)
     """依赖任务产生的因果节点列表（取代旧的dependencies_artifacts）"""
 
     # === 历史参考（可选）===
-    relevant_experience: Optional[str] = None
+    relevant_experience: str | None = None
     """可选：RAG 检索的相关经验"""
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """转换为字典格式"""
         return {
             "subtask_id": self.subtask_id,
@@ -467,11 +469,11 @@ class ExecutionStep:
     step_id: str
     parent_id: str
     thought: str
-    action: Dict[str, Any]
-    observation: Optional[str] = None
+    action: dict[str, Any]
+    observation: str | None = None
     status: str = "pending"
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """转换为字典格式"""
         return {
             "step_id": self.step_id,
@@ -499,16 +501,16 @@ class ExecutionLog:
     """
 
     subtask_id: str
-    steps: List[ExecutionStep] = field(default_factory=list)
+    steps: list[ExecutionStep] = field(default_factory=list)
     """每个步骤的完整记录"""
 
-    staged_causal_nodes: List[Node] = field(default_factory=list)
+    staged_causal_nodes: list[Node] = field(default_factory=list)
     """待审计的产出物候选"""
 
     final_status: str = "in_progress"
     """completed_by_llm / stalled_no_plan / completed_max_steps / etc."""
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """转换为字典格式"""
         return {
             "subtask_id": self.subtask_id,
@@ -542,13 +544,13 @@ class AuditResult:
     completion_check: str
     """完成条件的检查结果（详细说明）"""
 
-    validated_nodes: List[Dict[str, Any]] = field(default_factory=list)
+    validated_nodes: list[dict[str, Any]] = field(default_factory=list)
     """审计通过的因果节点列表（取代旧的validated_artifacts）"""
 
-    methodology_issues: List[str] = field(default_factory=list)
+    methodology_issues: list[str] = field(default_factory=list)
     """发现的方法论问题"""
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """转换为字典格式"""
         return {
             "status": normalize_audit_status(self.status),
@@ -581,20 +583,20 @@ class AuditReport:
     """审计结果"""
 
     # === 情报摘要部分（供 Planner 使用）===
-    key_findings: List[str] = field(default_factory=list)
+    key_findings: list[str] = field(default_factory=list)
     """关键发现（事实陈述）"""
 
-    failure_root_cause: Optional[str] = None
+    failure_root_cause: str | None = None
     """如果失败，根本原因"""
 
-    suggested_follow_up: Optional[str] = None
+    suggested_follow_up: str | None = None
     """可选：简短的后续建议（不是详细规划）"""
 
     # === 经验提炼 ===
-    experience_insight: Optional[Dict[str, Any]] = None
+    experience_insight: dict[str, Any] | None = None
     """经验洞见（用于长期记忆）"""
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """转换为字典格式"""
         return {
             "subtask_id": self.subtask_id,
@@ -663,14 +665,14 @@ class PlanningAttempt:
     timestamp: float
     goal: str
     strategy: str
-    assumptions: List[str]
-    generated_plan_summary: Dict[str, Any]
+    assumptions: list[str]
+    generated_plan_summary: dict[str, Any]
     outcome_summary: str = "pending"  # 由 Reflector 或 Agent 主循环更新
 
     # 新增：完整的LLM输入输出记录，用于推理连续性
-    llm_input_prompt: Optional[str] = None  # 发送给LLM的完整提示词
-    llm_output_response: Optional[str] = None  # LLM的完整响应输出
-    chain_of_thought: Optional[str] = None  # LLM的推理过程（如果单独提取）
+    llm_input_prompt: str | None = None  # 发送给LLM的完整提示词
+    llm_output_response: str | None = None  # LLM的完整响应输出
+    chain_of_thought: str | None = None  # LLM的推理过程（如果单独提取）
 
 
 @dataclass
@@ -708,13 +710,13 @@ class PlannerContext:
     initial_goal: str
     target_url: str
 
-    planning_history: List[PlanningAttempt] = field(default_factory=list)
-    rejected_strategies: Dict[str, str] = field(default_factory=dict)  # 映射：策略 -> 拒绝原因
-    long_term_objectives: List[str] = field(default_factory=list)
+    planning_history: list[PlanningAttempt] = field(default_factory=list)
+    rejected_strategies: dict[str, str] = field(default_factory=dict)  # 映射：策略 -> 拒绝原因
+    long_term_objectives: list[str] = field(default_factory=list)
 
     # 新增：最新的完整反思报告，用于推理连续性
-    latest_reflection_report: Optional[Dict[str, Any]] = None  # 上一次Reflector的完整输出
-    previous_planning_session: Optional[Dict[str, Any]] = None  # 上一次规划的完整会话记录
+    latest_reflection_report: dict[str, Any] | None = None  # 上一次Reflector的完整输出
+    previous_planning_session: dict[str, Any] | None = None  # 上一次规划的完整会话记录
 
     # 新增：上下文管理策略相关字段
     compressed_history_summary: str = ""  # 存储被压缩后的历史摘要
@@ -730,7 +732,7 @@ class PlannerContext:
             # 标记需要压缩，实际压缩在agent主循环中异步触发
             self._needs_compression = True
 
-    def get_recent_history(self, window_size: int = 10) -> List[PlanningAttempt]:
+    def get_recent_history(self, window_size: int = 10) -> list[PlanningAttempt]:
         """获取最近的规划历史（滑动窗口）。"""
         return self.planning_history[-window_size:]
 
@@ -763,12 +765,12 @@ class ReflectionInsight:
     subtask_id: str
     normalized_status: str  # 例如 "True_Success", "Soft_Fail", "Hard_Fail"
     key_insight: str
-    failure_pattern: Optional[str] = None  # 例如 "HTTP_403_ON_POST"
+    failure_pattern: str | None = None  # 例如 "HTTP_403_ON_POST"
 
     # 新增：完整的反思报告，用于推理连续性
-    full_reflection_report: Optional[Dict[str, Any]] = None  # Reflector的完整JSON输出
-    llm_reflection_prompt: Optional[str] = None  # 发送给Reflector的完整提示词
-    llm_reflection_response: Optional[str] = None  # Reflector的完整响应输出
+    full_reflection_report: dict[str, Any] | None = None  # Reflector的完整JSON输出
+    llm_reflection_prompt: str | None = None  # 发送给Reflector的完整提示词
+    llm_reflection_response: str | None = None  # Reflector的完整响应输出
 
 
 @dataclass
@@ -793,12 +795,12 @@ class ReflectorContext:
     """
 
     session_start_time: float
-    reflection_log: List[ReflectionInsight] = field(default_factory=list)
-    failure_patterns: Dict[str, int] = field(default_factory=dict)  # 映射：模式 -> 计数
-    success_patterns: Dict[str, int] = field(default_factory=dict)  # 映射：模式 -> 计数
-    active_hypotheses: Dict[str, str] = field(default_factory=dict)  # 映射：假设ID -> 描述
-    validated_patterns: List[Dict[str, Any]] = field(default_factory=list)  # 已验证的有效模式列表
-    persistent_insights: List[Dict[str, Any]] = field(default_factory=list)  # 持久性洞察列表
+    reflection_log: list[ReflectionInsight] = field(default_factory=list)
+    failure_patterns: dict[str, int] = field(default_factory=dict)  # 映射：模式 -> 计数
+    success_patterns: dict[str, int] = field(default_factory=dict)  # 映射：模式 -> 计数
+    active_hypotheses: dict[str, str] = field(default_factory=dict)  # 映射：假设ID -> 描述
+    validated_patterns: list[dict[str, Any]] = field(default_factory=list)  # 已验证的有效模式列表
+    persistent_insights: list[dict[str, Any]] = field(default_factory=list)  # 持久性洞察列表
 
     # 新增：上下文管理策略相关字段
     compressed_reflection_summary: str = ""  # 存储被压缩后的反思摘要
@@ -817,6 +819,6 @@ class ReflectorContext:
         if insight.failure_pattern:
             self.failure_patterns[insight.failure_pattern] = self.failure_patterns.get(insight.failure_pattern, 0) + 1
 
-    def get_recent_insights(self, window_size: int = 10) -> List[ReflectionInsight]:
+    def get_recent_insights(self, window_size: int = 10) -> list[ReflectionInsight]:
         """获取最近的反思洞察（滑动窗口）。"""
         return self.reflection_log[-window_size:]

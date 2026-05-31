@@ -2,40 +2,37 @@ import asyncio
 import json
 import logging
 import os
-import sys
 import subprocess
-import uuid
+import sys
 import time
-from typing import Any, Dict, List, Optional
+import uuid
 from datetime import datetime
+from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request, Query
-from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import desc, select, update
 from sse_starlette.sse import EventSourceResponse
-from fastapi.responses import Response
 
-from sqlalchemy import select, desc, update, delete
-from sqlalchemy.ext.asyncio import AsyncSession
+from conf.config import WEB_API_KEY, WEB_CORS_ORIGINS, WEB_HOST, WEB_PORT
+from core.database.models import EventLogModel, GraphEdgeModel, GraphNodeModel, SessionModel
 from core.database.utils import (
-    get_db_session,
-    init_db,
     AsyncSessionLocal,
-    get_pending_intervention_request,
     create_intervention_request,
+    get_pending_intervention_request,
+    init_db,
 )
-from core.database.models import SessionModel, GraphNodeModel, GraphEdgeModel, EventLogModel, InterventionModel
-from core.intervention import intervention_manager # Added this line
-from conf.config import WEB_HOST, WEB_PORT, WEB_API_KEY, WEB_CORS_ORIGINS
+from core.intervention import intervention_manager  # Added this line
 
 # 配置 SSE 日志
 _sse_logger = logging.getLogger("web.sse")
 
 # 进程跟踪字典: {op_id -> subprocess.Popen}
 # 用于在终止任务时直接kill进程
-_running_processes: Dict[str, subprocess.Popen] = {}
+_running_processes: dict[str, subprocess.Popen] = {}
 # 保护 _running_processes 的并发访问 (create / abort 可能并发)
 _processes_lock = asyncio.Lock()
 
@@ -84,12 +81,12 @@ def _get_mcp_config_path() -> str:
     return os.path.join(os.getcwd(), "mcp.json")
 
 
-def _load_mcp_config() -> Dict[str, Any]:
+def _load_mcp_config() -> dict[str, Any]:
     config_path = _get_mcp_config_path()
     if not os.path.exists(config_path):
         return {"mcpServers": {}}
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8") as f:
             loaded = json.load(f)
             if isinstance(loaded, dict):
                 loaded.setdefault("mcpServers", {})
@@ -99,7 +96,7 @@ def _load_mcp_config() -> Dict[str, Any]:
     return {"mcpServers": {}}
 
 
-def _save_mcp_config(config: Dict[str, Any]) -> None:
+def _save_mcp_config(config: dict[str, Any]) -> None:
     config_path = _get_mcp_config_path()
     with open(config_path, "w", encoding="utf-8") as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
@@ -115,11 +112,11 @@ async def _reload_mcp_sessions() -> bool:
         _sse_logger.warning(f"Failed to reload MCP sessions: {e}")
         return False
 
-def _reconstruct_graph_data(nodes: List[GraphNodeModel], edges: List[GraphEdgeModel], task_id: str) -> Dict[str, Any]:
+def _reconstruct_graph_data(nodes: list[GraphNodeModel], edges: list[GraphEdgeModel], task_id: str) -> dict[str, Any]:
     """Reconstruct graph data structure from DB models for frontend."""
     frontend_nodes = []
     node_map = {} # id -> data
-    
+
     for n in nodes:
         data = n.data.copy() if n.data else {}
         # Merge top-level fields
@@ -131,16 +128,16 @@ def _reconstruct_graph_data(nodes: List[GraphNodeModel], edges: List[GraphEdgeMo
              data['created_at'] = n.created_at.timestamp()
 
         node_map[n.node_id] = data
-        
+
         # Logic similar to original api_graph_execution
         if data.get("is_staged_causal") or data.get("type") == "staged_causal":
             continue
-            
+
         is_root = (n.node_id == task_id)
         node_type = n.type or "unknown"
         is_subtask = node_type in ["task", "subtask"] or n.node_id.startswith("subtask_")
         is_action = node_type in ["execution_step", "action", "tool_use"]
-        
+
         if is_root:
             unified_type = "root"
         elif is_subtask and not is_action:
@@ -166,7 +163,7 @@ def _reconstruct_graph_data(nodes: List[GraphNodeModel], edges: List[GraphEdgeMo
             label = data.get("description") or data.get("goal") or n.node_id
         else:
             label = n.node_id
-            
+
         node_entry = {
             "id": n.node_id,
             "type": unified_type,
@@ -184,7 +181,7 @@ def _reconstruct_graph_data(nodes: List[GraphNodeModel], edges: List[GraphEdgeMo
 
     frontend_edges = []
     node_ids = set(n["id"] for n in frontend_nodes)
-    
+
     for e in edges:
         if e.source_node_id in node_ids and e.target_node_id in node_ids:
             frontend_edges.append({
@@ -192,15 +189,15 @@ def _reconstruct_graph_data(nodes: List[GraphNodeModel], edges: List[GraphEdgeMo
                 "target": e.target_node_id,
                 "type": e.relation_type
             })
-            
+
     return {"nodes": frontend_nodes, "edges": frontend_edges}
 
-def _reconstruct_causal_data(nodes: List[GraphNodeModel], edges: List[GraphEdgeModel]) -> Dict[str, Any]:
+def _reconstruct_causal_data(nodes: list[GraphNodeModel], edges: list[GraphEdgeModel]) -> dict[str, Any]:
     frontend_nodes = []
     for n in nodes:
         data = n.data.copy() if n.data else {}
         label = data.get("title") or data.get("description") or n.type or n.node_id
-        
+
         node_entry = {
             "id": n.node_id,
             "label": label,
@@ -221,15 +218,15 @@ def _reconstruct_causal_data(nodes: List[GraphNodeModel], edges: List[GraphEdgeM
                 if key not in node_entry:
                     node_entry[key] = value
         frontend_nodes.append(node_entry)
-        
+
     frontend_edges = []
     for e in edges:
         frontend_edges.append({
-            "source": e.source_node_id, 
-            "target": e.target_node_id, 
+            "source": e.source_node_id,
+            "target": e.target_node_id,
             "label": e.relation_type
         })
-        
+
     return {"nodes": frontend_nodes, "edges": frontend_edges}
 
 
@@ -246,7 +243,7 @@ async def api_ops():
             )
         )
         sessions = result.scalars().all()
-        
+
         items = []
         for s in sessions:
             items.append({
@@ -265,7 +262,7 @@ async def api_ops():
         return {"items": items}
 
 @app.post("/api/ops/reorder")
-async def api_ops_reorder(payload: Dict[str, Any]):
+async def api_ops_reorder(payload: dict[str, Any]):
     """持久化保存任务列表顺序"""
     order = payload.get("order") or []
     if not isinstance(order, list):
@@ -289,7 +286,7 @@ async def api_ops_detail(op_id: str):
         s = result.scalar_one_or_none()
         if not s:
             raise HTTPException(status_code=404, detail="Session not found")
-            
+
         return {
             "op_id": s.id,
             "task_id": s.name,
@@ -304,30 +301,30 @@ async def api_graph_execution(op_id: str):
         # Fetch task nodes
         nodes_res = await session.execute(
             select(GraphNodeModel).where(
-                GraphNodeModel.session_id == op_id, 
+                GraphNodeModel.session_id == op_id,
                 GraphNodeModel.graph_type == 'task'
             )
         )
         nodes = nodes_res.scalars().all()
-        
+
         edges_res = await session.execute(
             select(GraphEdgeModel).where(
-                GraphEdgeModel.session_id == op_id, 
+                GraphEdgeModel.session_id == op_id,
                 GraphEdgeModel.graph_type == 'task'
             )
         )
         edges = edges_res.scalars().all()
-        
+
         # Get session to find root task id (usually stored in name or logic)
         # But we can infer root from nodes (node with no incoming execution/dependency edges, or type='task')
         # For simplicity, we assume the session name might be the task_id, or we find the node with type='task'
-        
+
         task_id = "unknown"
         for n in nodes:
             if n.type == 'task':
                 task_id = n.node_id
                 break
-                
+
         return _reconstruct_graph_data(nodes, edges, task_id)
 
 @app.get("/api/graph/causal")
@@ -335,20 +332,20 @@ async def api_graph_causal(op_id: str):
     async with AsyncSessionLocal() as session:
         nodes_res = await session.execute(
             select(GraphNodeModel).where(
-                GraphNodeModel.session_id == op_id, 
+                GraphNodeModel.session_id == op_id,
                 GraphNodeModel.graph_type == 'causal'
             )
         )
         nodes = nodes_res.scalars().all()
-        
+
         edges_res = await session.execute(
             select(GraphEdgeModel).where(
-                GraphEdgeModel.session_id == op_id, 
+                GraphEdgeModel.session_id == op_id,
                 GraphEdgeModel.graph_type == 'causal'
             )
         )
         edges = edges_res.scalars().all()
-        
+
         return _reconstruct_causal_data(nodes, edges)
 
 @app.get("/api/tree/execution")
@@ -380,13 +377,13 @@ async def api_get_pending_intervention(op_id: str):
     return {"pending": req is not None, "request": req}
 
 @app.post("/api/ops/{op_id}/intervention/decision")
-async def api_submit_intervention_decision(op_id: str, payload: Dict[str, Any]):
+async def api_submit_intervention_decision(op_id: str, payload: dict[str, Any]):
     req_id = payload.get("id") # The request ID comes from the frontend
     action = payload.get("action")
     modified_data = payload.get("modified_data")
     if not req_id or not action:
         raise HTTPException(status_code=400, detail="req_id and action are required")
-    
+
     success = await intervention_manager.submit_decision(req_id, action, modified_data)
     if not success:
         raise HTTPException(status_code=404, detail="No pending request found for this ID")
@@ -394,7 +391,7 @@ async def api_submit_intervention_decision(op_id: str, payload: Dict[str, Any]):
 
 
 @app.post("/api/ops/{op_id}/inject_task")
-async def api_ops_inject_task(op_id: str, payload: Dict[str, Any]):
+async def api_ops_inject_task(op_id: str, payload: dict[str, Any]):
     description = (payload.get("description") or "").strip()
     dependencies = payload.get("dependencies") or []
     if not description:
@@ -417,7 +414,7 @@ async def api_mcp_config():
 
 
 @app.post("/api/mcp/add")
-async def api_mcp_add(payload: Dict[str, Any]):
+async def api_mcp_add(payload: dict[str, Any]):
     name = (payload.get("name") or "").strip()
     command = (payload.get("command") or "").strip()
     args = payload.get("args") or []
@@ -445,13 +442,13 @@ async def api_mcp_add(payload: Dict[str, Any]):
 @app.post("/api/ops/{op_id}/abort")
 async def api_ops_abort(op_id: str):
     import signal
-    
+
     async with AsyncSessionLocal() as session:
         result = await session.execute(select(SessionModel).where(SessionModel.id == op_id))
         s = result.scalar_one_or_none()
         if not s:
             raise HTTPException(status_code=404, detail="Session not found")
-        
+
         # 1. 更新数据库状态
         await session.execute(
             update(SessionModel)
@@ -459,7 +456,7 @@ async def api_ops_abort(op_id: str):
             .values(status="aborted", updated_at=datetime.now())
         )
         await session.commit()
-        
+
     # 2. 直接强杀整个进程组
     # 由于进程以 start_new_session=True 启动，Agent 及其所有子进程（MCP工具等）
     # 都在同一个独立进程组中，使用 os.killpg + SIGKILL 可以一次性全部终止
@@ -485,34 +482,34 @@ async def api_ops_abort(op_id: str):
             _sse_logger.error(f"Failed to kill process for op_id '{op_id}': {e}")
     else:
         _sse_logger.warning(f"No tracked process found for op_id '{op_id}'")
-        
+
     return {
-        "ok": True, 
+        "ok": True,
         "message": "Task aborted successfully",
         "process_killed": process_killed
     }
 
 @app.patch("/api/ops/{op_id}")
-async def api_ops_rename(op_id: str, payload: Dict[str, Any]):
+async def api_ops_rename(op_id: str, payload: dict[str, Any]):
     """重命名任务（更新显示名称）"""
     new_name = (payload.get("name") or "").strip()
-    
+
     if not new_name:
         raise HTTPException(status_code=400, detail="Name is required")
-    
+
     async with AsyncSessionLocal() as session:
         result = await session.execute(select(SessionModel).where(SessionModel.id == op_id))
         s = result.scalar_one_or_none()
         if not s:
             raise HTTPException(status_code=404, detail="Session not found")
-        
+
         await session.execute(
             update(SessionModel)
             .where(SessionModel.id == op_id)
             .values(name=new_name, updated_at=datetime.now())
         )
         await session.commit()
-        
+
     _sse_logger.info(f"Task '{op_id}' renamed to '{new_name}'")
     return {"ok": True, "name": new_name}
 
@@ -523,7 +520,7 @@ async def api_ops_delete(op_id: str):
         s = result.scalar_one_or_none()
         if not s:
             raise HTTPException(status_code=404, detail="Session not found")
-        
+
         await session.delete(s)
         await session.commit()
     return {"ok": True}
@@ -545,7 +542,7 @@ async def api_events(request: Request, op_id: str):
             "id": str(time.time()),
             "data": json.dumps({"event": "graph.ready", "op_id": op_id})
         }
-        
+
         # Initial events load
         async with AsyncSessionLocal() as session:
             # Send all historical events up to now, limited for performance
@@ -563,7 +560,7 @@ async def api_events(request: Request, op_id: str):
                 }
             if initial_events:
                 last_event_log_id = initial_events[-1].id
-            
+
             # Send initial pending intervention if any
             intervention_db_model = await get_pending_intervention_request(op_id)
             if intervention_db_model:
@@ -590,17 +587,17 @@ async def api_events(request: Request, op_id: str):
             if await request.is_disconnected():
                 _sse_logger.info(f"SSE client for {op_id} disconnected.")
                 break
-                
+
             try:
                 current_time = time.time()
-                
+
                 async with AsyncSessionLocal() as session:
                     # 1. Check for Graph Updates
                     session_res = await session.execute(
                         select(SessionModel.updated_at).where(SessionModel.id == op_id)
                     )
                     session_updated_at = session_res.scalar_one_or_none()
-                    
+
                     if session_updated_at and session_updated_at.timestamp() > last_graph_update_time:
                         yield {
                             "event": "message",
@@ -623,7 +620,7 @@ async def api_events(request: Request, op_id: str):
                             "data": json.dumps({"event": e.event_type, "data": e.content, "timestamp": e.timestamp.timestamp()})
                         }
                         last_event_log_id = e.id # Update last_event_log_id
-                    
+
                     # 3. Check for new pending Intervention Requests
                     intervention_db_model = await get_pending_intervention_request(op_id)
                     if intervention_db_model and intervention_db_model.created_at.timestamp() > last_intervention_check_time:
@@ -649,7 +646,7 @@ async def api_events(request: Request, op_id: str):
                 # Keep connection alive with a ping, even if no new data
                 yield {"event": "ping", "id": str(current_time), "data": "{}"}
                 await asyncio.sleep(1) # Poll every 1 second
-                
+
             except Exception as e:
                 _sse_logger.error(f"SSE Error for {op_id}: {e}", exc_info=True)
                 yield {"event": "error", "id": str(time.time()), "data": json.dumps({"error": str(e)})}
@@ -659,25 +656,25 @@ async def api_events(request: Request, op_id: str):
 
 # Legacy/Compatibility Routes
 @app.post("/api/ops")
-async def api_ops_create(payload: Dict[str, Any]):
+async def api_ops_create(payload: dict[str, Any]):
     goal = (payload.get("goal") or "").strip()
     task_name = (payload.get("task_name") or f"web_task_{int(time.time())}").strip()
-    
+
     # 新增配置选项
     human_in_the_loop = payload.get("human_in_the_loop", False)  # 人机协同模式
     output_mode = payload.get("output_mode", "default")  # 输出模式: simple, default, debug
-    
+
     # LLM模型配置（可选）
     llm_planner_model = payload.get("llm_planner_model", "").strip()
     llm_executor_model = payload.get("llm_executor_model", "").strip()
     llm_reflector_model = payload.get("llm_reflector_model", "").strip()
-    
+
     if not goal:
         raise HTTPException(status_code=400, detail="Goal is required to create a task.")
 
     # Generate a unique op_id for the new task
     op_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}"
-    
+
     # Construct the command to run agent.py in the background
     # Ensure it runs within the same virtual environment as the web server
     command = [
@@ -689,7 +686,7 @@ async def api_ops_create(payload: Dict[str, Any]):
         "--web", # To ensure agent prints web URL for debug if needed, but no web server will be started.
         "--output-mode", output_mode,
     ]
-    
+
     # 添加可选的LLM模型配置
     if llm_planner_model:
         command.extend(["--llm-planner-model", llm_planner_model])
@@ -731,27 +728,27 @@ async def api_ops_create(payload: Dict[str, Any]):
 
         # Use start_new_session=True to detach the child process from the current process group
         # This makes the child process independent of the web server's lifespan
-        
+
         # Create log files for stdout and stderr to help debug issues
         log_base_dir = os.path.join(os.path.dirname(__file__), "..", "logs", task_name)
         os.makedirs(log_base_dir, exist_ok=True)
         stdout_log = open(os.path.join(log_base_dir, f"{op_id}_stdout.log"), "w")
         stderr_log = open(os.path.join(log_base_dir, f"{op_id}_stderr.log"), "w")
-        
-        process = subprocess.Popen(command, start_new_session=True, 
+
+        process = subprocess.Popen(command, start_new_session=True,
                                    stdout=stdout_log,  # Log stdout to file
                                    stderr=stderr_log,  # Log stderr to file
                                    env=env)  # 传递环境变量
-        
+
         # 保存进程引用到跟踪字典，以便后续可以直接kill
         async with _processes_lock:
             _running_processes[op_id] = process
-        
+
         _sse_logger.info(f"Agent task '{task_name}' (op_id: {op_id}) started with PID: {process.pid}, HITL: {human_in_the_loop}")
 
         return {
-            "ok": True, 
-            "op_id": op_id, 
+            "ok": True,
+            "op_id": op_id,
             "pid": process.pid,
             "message": "Agent task started successfully.",
             "config": {

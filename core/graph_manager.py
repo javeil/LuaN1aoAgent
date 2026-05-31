@@ -1,28 +1,27 @@
 # core/graph_manager.py
+import asyncio
 import json
 import logging
-import time
-import asyncio
 import re
+import time
+from dataclasses import asdict, is_dataclass
+from typing import Any
+
 import networkx as nx
 from networkx.readwrite import json_graph
 from rich.tree import Tree
-from typing import Dict, List, Any, Optional
-from dataclasses import is_dataclass, asdict
 
-from core.events import broker
 from core.console import console_proxy as console
+from core.data_contracts import CausalEdge, CausalNode
 from core.database.utils import (
-    schedule_coroutine, 
-    upsert_node, 
-    delete_node, 
-    add_edge, 
-    update_session_status,
+    add_edge,
+    atomic_upsert_graph_data,
     create_session,
-    atomic_upsert_graph_data
+    delete_node,
+    schedule_coroutine,
+    upsert_node,
 )
-
-from core.data_contracts import CausalNode, CausalEdge
+from core.events import broker
 
 
 class GraphManagerError(Exception):
@@ -33,8 +32,8 @@ class NodeNotFoundError(GraphManagerError):
     pass
 
 
-from enum import Enum
 import math
+from enum import Enum
 
 
 class EvidenceStrength(Enum):
@@ -58,20 +57,20 @@ class GraphManager:
     (支持 SQLite 持久化)
     """
 
-    def __init__(self, task_id: str, goal: str, op_id: Optional[str] = None):
+    def __init__(self, task_id: str, goal: str, op_id: str | None = None):
         self.task_id = task_id
         self.graph = nx.DiGraph()
         self.causal_graph = nx.DiGraph()
         self._execution_counter = 0
         self._causal_graph_version = 0
-        self._attack_paths_cache: List[Dict[str, Any]] = []
+        self._attack_paths_cache: list[dict[str, Any]] = []
         self._attack_paths_cache_version = -1
         self.op_id = op_id  # This is the session_id in DB
 
         # P1-2: 并行任务共享公告板 — append-only list，CPython GIL 保证单次 append 的原子性
-        self.shared_findings: List[Dict] = []
-        self._shared_findings_read_cursors: Dict[str, int] = {}  # subtask_id -> 已读条数
-        
+        self.shared_findings: list[dict] = []
+        self._shared_findings_read_cursors: dict[str, int] = {}  # subtask_id -> 已读条数
+
         # Initialize session in DB if op_id is provided
         if self.op_id:
             schedule_coroutine(create_session(
@@ -80,20 +79,20 @@ class GraphManager:
                 goal=goal,
                 config={}
             ))
-            
+
         self.initialize_graph(goal)
 
     def set_op_id(self, op_id: str):
         """Set the operation ID for event emission and DB persistence."""
         self.op_id = op_id
-        # Note: We assume the session is created elsewhere if set late, 
+        # Note: We assume the session is created elsewhere if set late,
         # or we could trigger a create_session here too if needed.
 
     def initialize_graph(self, goal: str) -> None:
         """初始化图，添加代表整体任务的根节点."""
         node_data = {"type": "task", "goal": goal, "status": "in_progress"}
         self.graph.add_node(self.task_id, **node_data)
-        
+
         if self.op_id:
             schedule_coroutine(upsert_node(self.op_id, self.task_id, 'task', node_data))
 
@@ -105,7 +104,7 @@ class GraphManager:
         """Helper to sync a node to DB asynchronously."""
         if not self.op_id:
             return
-            
+
         if graph_type == 'task':
             if self.graph.has_node(node_id):
                 data = self.graph.nodes[node_id]
@@ -131,8 +130,8 @@ class GraphManager:
 
     def _sync_nodes_and_edges_atomic(
         self,
-        node_ids: List[str],
-        edges: List[tuple],
+        node_ids: list[str],
+        edges: list[tuple],
         graph_type: str = 'task'
     ):
         """
@@ -145,9 +144,9 @@ class GraphManager:
         """
         if not self.op_id:
             return
-        
+
         graph = self.graph if graph_type == 'task' else self.causal_graph
-        
+
         # 收集节点数据
         nodes_data = []
         for node_id in node_ids:
@@ -155,7 +154,7 @@ class GraphManager:
                 data = dict(graph.nodes[node_id])
                 data['node_id'] = node_id
                 nodes_data.append(data)
-        
+
         # 收集边数据
         edges_data = []
         for source, target in edges:
@@ -164,7 +163,7 @@ class GraphManager:
                 data['source'] = source
                 data['target'] = target
                 edges_data.append(data)
-        
+
         # 原子写入
         if nodes_data or edges_data:
             schedule_coroutine(
@@ -197,7 +196,7 @@ class GraphManager:
         return fact_id
 
     @staticmethod
-    def _is_temporary_causal_id(node_id: Optional[str]) -> bool:
+    def _is_temporary_causal_id(node_id: str | None) -> bool:
         if not isinstance(node_id, str):
             return False
         value = node_id.strip().lower()
@@ -211,7 +210,7 @@ class GraphManager:
             return True
         return False
 
-    def add_causal_node(self, artifact: Dict) -> str:
+    def add_causal_node(self, artifact: dict) -> str:
         legacy_type = artifact.get("type")
         if not artifact.get("node_type"):
             if legacy_type:
@@ -302,10 +301,10 @@ class GraphManager:
 
         if payload.get("type") and not payload.get("node_type"):
             payload["node_type"] = payload["type"]
-        
+
         if "id" in payload:
             del payload["id"]
-        
+
         return self.add_causal_node(payload)
 
     def add_causal_edge_obj(self, edge: "CausalEdge") -> None:
@@ -375,10 +374,10 @@ class GraphManager:
             current_confidence = float(confidence_val)
         except (ValueError, TypeError):
             current_confidence = 0.5
-        
+
         # 分类证据强度（优先使用 LLM 输出的 evidence_strength）
         strength = self._classify_evidence_strength(label, evidence_strength=evidence_strength)
-        
+
         if strength == EvidenceStrength.NECESSARY:
             # 必然性证据：一票否决或确认
             if label == "CONTRADICTS":
@@ -394,16 +393,16 @@ class GraphManager:
             # 偶然性证据：Sigmoid 非线性累积
             # 使用 logit 变换实现边缘收敛（避免置信度过快到达边界）
             delta = 0.4 if label == "SUPPORTS" else -0.5
-            
+
             # Clamp to avoid math domain errors
             clamped_conf = max(0.01, min(0.99, current_confidence))
             logit = math.log(clamped_conf / (1 - clamped_conf))
             new_logit = logit + delta
             new_confidence = 1 / (1 + math.exp(-new_logit))
-            
+
             # 防止极端值
             new_confidence = max(0.05, min(0.95, new_confidence))
-            
+
             # 更新状态
             if label == "SUPPORTS":
                 self.causal_graph.nodes[hypothesis_id]["status"] = "SUPPORTED"
@@ -413,12 +412,12 @@ class GraphManager:
         self.causal_graph.nodes[hypothesis_id]["confidence"] = new_confidence
         self._touch_causal_graph()
         self._sync_node(hypothesis_id, 'causal')
-        
+
         node_status = self.causal_graph.nodes[hypothesis_id].get("status")
         strength_label = strength.value if strength else "contingent"
         message = f"Confidence for hypothesis '{hypothesis_id}' updated from {current_confidence:.2f} to {new_confidence:.2f} via {strength_label} '{label}' edge. Status: {node_status}."
         logging.debug(message)
-        
+
         try:
             console.print(f"[bold yellow]Confidence Update:[/bold yellow] {message}")
         except Exception:
@@ -428,7 +427,7 @@ class GraphManager:
             try:
                 loop = asyncio.get_running_loop()
                 loop.create_task(broker.emit("graph.changed", {
-                    "reason": "confidence_update", 
+                    "reason": "confidence_update",
                     "message": message,
                     "node_id": hypothesis_id,
                     "new_confidence": new_confidence,
@@ -457,13 +456,13 @@ class GraphManager:
             strength_lower = evidence_strength.lower().strip()
             if strength_lower in ("necessary", "decisive", "conclusive", "definitive"):
                 return EvidenceStrength.NECESSARY
-            elif strength_lower in ("contingent", "cumulative", "weak", "indicative"):
+            if strength_lower in ("contingent", "cumulative", "weak", "indicative"):
                 return EvidenceStrength.CONTINGENT
 
-        
+
         if evidence_type:
             logging.debug(f"Evidence type provided: {evidence_type}, but defaulting to CONTINGENT as no strength was specified.")
-        
+
         # 2. 默认为偶然性证据 (Conservative Default)
         return EvidenceStrength.CONTINGENT
 
@@ -473,11 +472,11 @@ class GraphManager:
         max_paths_per_pair: int = 5,
         max_path_length: int = 6,
         use_cache: bool = True,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         if use_cache and self._attack_paths_cache_version == self._causal_graph_version:
             return list(self._attack_paths_cache)
 
-        attack_paths: List[Dict[str, Any]] = []
+        attack_paths: list[dict[str, Any]] = []
         evidence_nodes = [n for n, d in self.causal_graph.nodes(data=True) if (d.get("node_type") or d.get("type")) == "Evidence"]
         vulnerability_nodes = [n for n, d in self.causal_graph.nodes(data=True) if (d.get("node_type") in {"Vulnerability", "PossibleVulnerability", "ConfirmedVulnerability"} or d.get("type") in {"Vulnerability", "PossibleVulnerability", "ConfirmedVulnerability"})]
         exploit_nodes = [n for n, d in self.causal_graph.nodes(data=True) if (d.get("node_type") or d.get("type")) == "Exploit"]
@@ -562,9 +561,9 @@ class GraphManager:
     def _extend_path_to_attack_goal(
         self,
         path: tuple,  # networkx returns tuple
-        path_details: List[Dict[str, Any]],
+        path_details: list[dict[str, Any]],
         base_score: float
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """
         Extend a path from Vulnerability through Exploit to AttackGoal.
 
@@ -618,16 +617,15 @@ class GraphManager:
                         "score": base_score,  # Use independent score, not joint
                         "reached_goal": goal_id,
                     }
-                else:
-                    # Exploit found but no AttackGoal - return path with exploit
-                    return {
-                        "path": extended_details,
-                        "score": base_score,
-                    }
+                # Exploit found but no AttackGoal - return path with exploit
+                return {
+                    "path": extended_details,
+                    "score": base_score,
+                }
 
         return None
 
-    def _find_reached_attack_goal_from_path(self, path: List[Dict[str, Any]]) -> Optional[str]:
+    def _find_reached_attack_goal_from_path(self, path: list[dict[str, Any]]) -> str | None:
         """Find if any node in the path has an ENABLES edge to an AttackGoal."""
         for node_info in path:
             node_id = node_info.get("id")
@@ -638,7 +636,7 @@ class GraphManager:
                 return goal_id
         return None
 
-    def _find_reached_attack_goal(self, node_id: str) -> Optional[str]:
+    def _find_reached_attack_goal(self, node_id: str) -> str | None:
         """Find if a node has an ENABLES edge to an AttackGoal."""
         if not self.causal_graph.has_node(node_id):
             return None
@@ -673,7 +671,7 @@ class GraphManager:
 
         return new_score
 
-    def _analyze_attack_goal_convergence(self, attack_paths: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    def _analyze_attack_goal_convergence(self, attack_paths: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         """
         Analyze multiple attack paths converging on the same AttackGoal.
 
@@ -687,7 +685,7 @@ class GraphManager:
                 "status": overall goal status
             }
         """
-        convergence: Dict[str, Dict[str, Any]] = {}
+        convergence: dict[str, dict[str, Any]] = {}
 
         for path_info in attack_paths:
             path = path_info.get("path", [])
@@ -745,7 +743,7 @@ class GraphManager:
 
         return convergence
 
-    def _find_contradiction_clusters(self) -> List[Dict[str, Any]]:
+    def _find_contradiction_clusters(self) -> list[dict[str, Any]]:
         clusters = []
         for node_id, data in self.causal_graph.nodes(data=True):
             if data.get("node_type") == "Hypothesis":
@@ -768,7 +766,7 @@ class GraphManager:
                     })
         return clusters
 
-    def _get_contradicting_evidences_for_hypothesis(self, hypo_id: str) -> List[Dict[str, Any]]:
+    def _get_contradicting_evidences_for_hypothesis(self, hypo_id: str) -> list[dict[str, Any]]:
         evidences = []
         for predecessor in self.causal_graph.predecessors(hypo_id):
             edge_data = self.causal_graph.get_edge_data(predecessor, hypo_id)
@@ -778,7 +776,7 @@ class GraphManager:
                     evidences.append({"id": predecessor, "description": pred_data.get("description")})
         return evidences
 
-    def _get_contradicted_hypotheses_for_evidence(self, evidence_id: str) -> List[Dict[str, Any]]:
+    def _get_contradicted_hypotheses_for_evidence(self, evidence_id: str) -> list[dict[str, Any]]:
         hypotheses = []
         for successor in self.causal_graph.successors(evidence_id):
             edge_data = self.causal_graph.get_edge_data(evidence_id, successor)
@@ -788,7 +786,7 @@ class GraphManager:
                     hypotheses.append({"id": successor, "description": succ_data.get("description")})
         return hypotheses
 
-    def _find_stalled_hypotheses(self, time_window_seconds: int = 3600) -> List[Dict[str, Any]]:
+    def _find_stalled_hypotheses(self, time_window_seconds: int = 3600) -> list[dict[str, Any]]:
         stalled = []
         now = time.time()
         hypothesis_nodes = {n: d for n, d in self.causal_graph.nodes(data=True) if d.get("node_type") == "Hypothesis"}
@@ -839,7 +837,7 @@ class GraphManager:
                 return True
         return False
 
-    def _find_competing_hypotheses(self) -> List[Dict[str, Any]]:
+    def _find_competing_hypotheses(self) -> list[dict[str, Any]]:
         """
         检测竞争假设（溯因推理核心）
         
@@ -850,11 +848,11 @@ class GraphManager:
             竞争假设列表，每项包含证据ID和相关假设
         """
         competing = []
-        
+
         for evidence_id, data in self.causal_graph.nodes(data=True):
             if data.get("node_type") != "Evidence":
                 continue
-            
+
             # 找出所有由此证据支持/反驳的假设
             related_hypotheses = []
             for _, target, edge_data in self.causal_graph.out_edges(evidence_id, data=True):
@@ -867,7 +865,7 @@ class GraphManager:
                         "status": target_data.get("status"),
                         "edge_label": edge_data.get("label"),
                     })
-            
+
             # 如果同一证据关联多个假设，标记为竞争
             if len(related_hypotheses) > 1:
                 competing.append({
@@ -876,10 +874,10 @@ class GraphManager:
                     "hypotheses_count": len(related_hypotheses),
                     "hypotheses": related_hypotheses,
                 })
-        
+
         return competing
 
-    def analyze_failure_patterns(self, time_window_seconds: int = 3600) -> Dict[str, Any]:
+    def analyze_failure_patterns(self, time_window_seconds: int = 3600) -> dict[str, Any]:
         """
         分析因果图中的问题模式
         
@@ -894,7 +892,7 @@ class GraphManager:
             "competing_hypotheses": self._find_competing_hypotheses(),
         }
 
-    def get_failed_nodes(self) -> Dict[str, Any]:
+    def get_failed_nodes(self) -> dict[str, Any]:
         failed_nodes = {}
         for node_id, data in self.graph.nodes(data=True):
             if data.get("type") == "subtask" and data.get("status") in ["failed", "stalled_orphan", "completed_error"]:
@@ -909,7 +907,7 @@ class GraphManager:
             if data.get("type") == "subtask" and data.get("status") == "completed"
         }
 
-    def get_relevant_causal_context(self, subtask_id: str, top_n_hypotheses: int = 5, top_n_paths: int = 3) -> Dict[str, Any]:
+    def get_relevant_causal_context(self, subtask_id: str, top_n_hypotheses: int = 5, top_n_paths: int = 3) -> dict[str, Any]:
         context = {
             "related_hypotheses": [],
             "key_facts": [],
@@ -954,7 +952,7 @@ class GraphManager:
 
         return context
 
-    def add_subtask_node(self, subtask_id: str, description: str, dependencies: List[str], priority: int = 1, reason: str = "", completion_criteria: str = "", mission_briefing: Optional[Dict] = None, max_steps: Optional[int] = None):
+    def add_subtask_node(self, subtask_id: str, description: str, dependencies: list[str], priority: int = 1, reason: str = "", completion_criteria: str = "", mission_briefing: dict | None = None, max_steps: int | None = None):
         if self.graph.has_node(subtask_id):
             logging.warning("GraphManager.add_subtask_node: node %s already exists, skip.", subtask_id)
             return
@@ -975,7 +973,7 @@ class GraphManager:
                 self.graph.add_edge(dep_id, subtask_id, type="dependency")
                 self._sync_edge(dep_id, subtask_id, 'task')
 
-    def add_execution_step(self, step_id: str, parent_id: str, thought: str, action: Dict, status: str = "pending", hypothesis_update: Optional[Dict] = None):
+    def add_execution_step(self, step_id: str, parent_id: str, thought: str, action: dict, status: str = "pending", hypothesis_update: dict | None = None):
         if not self.graph.has_node(parent_id):
             raise NodeNotFoundError(f"父节点 {parent_id} 不存在于图中。")
 
@@ -992,17 +990,17 @@ class GraphManager:
         self._sync_edge(parent_id, step_id, 'task')
         return step_id
 
-    def update_node(self, node_id: str, updates: Dict[str, Any]):
+    def update_node(self, node_id: str, updates: dict[str, Any]):
         if self.graph.has_node(node_id):
             if "status" in updates and updates["status"] in ("completed", "failed"):
                 import time
                 updates["completed_at"] = time.time()
-            
+
             for key, value in updates.items():
                 self.graph.nodes[node_id][key] = value
             self._ensure_node_defaults(node_id)
             self._sync_node(node_id, 'task')
-            
+
             node_type = self.graph.nodes[node_id].get("type")
             if node_type == "execution_step":
                 parent_id = self.graph.nodes[node_id].get("parent")
@@ -1018,7 +1016,7 @@ class GraphManager:
             logging.info("GraphManager.delete_node: removed node %s.", node_id)
             if self.op_id:
                 schedule_coroutine(delete_node(self.op_id, node_id, 'task'))
-            
+
             if node_data.get("type") == "execution_step":
                 parent_id = node_data.get("parent")
                 if parent_id:
@@ -1026,7 +1024,7 @@ class GraphManager:
         else:
             logging.warning("GraphManager.delete_node: node %s not found.", node_id)
 
-    def stage_proposed_changes(self, subtask_id: str, proposed_ops: List[Dict]):
+    def stage_proposed_changes(self, subtask_id: str, proposed_ops: list[dict]):
         if self.graph.has_node(subtask_id):
             self._ensure_node_defaults(subtask_id)
             self.graph.nodes[subtask_id]["proposed_changes"].extend(proposed_ops)
@@ -1034,7 +1032,7 @@ class GraphManager:
         else:
             raise ValueError(f"子任务 {subtask_id} 不存在于图中。")
 
-    def stage_proposed_causal_nodes(self, subtask_id: str, proposed_nodes: List[Dict]):
+    def stage_proposed_causal_nodes(self, subtask_id: str, proposed_nodes: list[dict]):
         if not self.graph.has_node(subtask_id):
             raise ValueError(f"子任务 {subtask_id} 不存在于图中。")
 
@@ -1085,7 +1083,7 @@ class GraphManager:
         if not proposed_nodes:
             return
 
-        normalized_nodes: List[Dict] = []
+        normalized_nodes: list[dict] = []
         for node_data in proposed_nodes:
             if not isinstance(node_data, dict):
                 continue
@@ -1166,7 +1164,7 @@ class GraphManager:
         }
         self.shared_findings.append(entry)
 
-    def get_new_shared_findings(self, subtask_id: str) -> List[Dict]:
+    def get_new_shared_findings(self, subtask_id: str) -> list[dict]:
         """P1-2: 返回自上次读取以来其他子任务新增的共享发现（排除自身来源）。更新游标。"""
         cursor = self._shared_findings_read_cursors.get(subtask_id, 0)
         new_entries = [
@@ -1176,7 +1174,7 @@ class GraphManager:
         self._shared_findings_read_cursors[subtask_id] = len(self.shared_findings)
         return new_entries
 
-    def resolve_source_step_id(self, source_step_id: str, subtask_id: Optional[str] = None) -> str:
+    def resolve_source_step_id(self, source_step_id: str, subtask_id: str | None = None) -> str:
         if not isinstance(source_step_id, str):
             return source_step_id
 
@@ -1204,7 +1202,7 @@ class GraphManager:
             logging.warning(f"GraphManager.clear_staged_causal_nodes: 子任务 {subtask_id} 不存在")
             return
 
-        staged_node_ids: List[str] = []
+        staged_node_ids: list[str] = []
         staged_list = self.graph.nodes[subtask_id].get("staged_causal_nodes", []) or []
         for node_data in staged_list:
             if isinstance(node_data, dict):
@@ -1249,7 +1247,7 @@ class GraphManager:
             status = subtask_data.get('status')
             priority = subtask_data.get('priority')
             desc = subtask_data.get('description')
-            
+
             summary_lines.append(f"\n- [子任务] {subtask_id}: {desc} (状态: {status}, 优先级: {priority})")
 
             dependencies = [u for u, v in self.graph.in_edges(subtask_id) if self.graph.edges[u, v].get("type") == "dependency"]
@@ -1346,7 +1344,7 @@ class GraphManager:
             guidance.append(f"### 当前执行摘要:\n{execution_summary}")
         return "\n\n".join(guidance) if guidance else "无额外指导。"
 
-    def print_graph_structure(self, console, highlight_nodes: Optional[List[str]] = None):
+    def print_graph_structure(self, console, highlight_nodes: list[str] | None = None):
         if not console:
             raise ValueError("console 实例不能为空")
         highlight_nodes = highlight_nodes or []
@@ -1382,10 +1380,10 @@ class GraphManager:
                 sub_tree.add(f"反思: {reflection}")
         console.print(tree)
 
-    def _get_node_type(self, data: Dict[str, Any]) -> str:
+    def _get_node_type(self, data: dict[str, Any]) -> str:
         return data.get("node_type", data.get("type"))
 
-    def _group_causal_nodes_by_type(self) -> Dict[str, list]:
+    def _group_causal_nodes_by_type(self) -> dict[str, list]:
         nodes = self.causal_graph.nodes(data=True)
         return {
             "evidence": [(n, d) for n, d in nodes if self._get_node_type(d) == "Evidence"],
@@ -1431,7 +1429,7 @@ class GraphManager:
         except (TypeError, ValueError):
             return str(val) if val is not None else "N/A"
 
-    def _add_credential_details(self, node_branch, data: Dict[str, Any]) -> None:
+    def _add_credential_details(self, node_branch, data: dict[str, Any]) -> None:
         cred_data = data.get("data", {})
         node_branch.add(f"用户名: {cred_data.get('username', 'N/A')}")
         node_branch.add(f"密码: {cred_data.get('password', 'N/A')}")
@@ -1441,7 +1439,7 @@ class GraphManager:
             node_branch.add(f"密码: {data.get('password', 'N/A')}")
             node_branch.add(f"来源: {data.get('source', 'N/A')}")
 
-    def _add_system_property_details(self, node_branch, data: Dict[str, Any]) -> None:
+    def _add_system_property_details(self, node_branch, data: dict[str, Any]) -> None:
         prop_data = data.get("data", {})
         node_branch.add(f"属性: {prop_data.get('property', 'N/A')}")
         node_branch.add(f"值: {prop_data.get('value', 'N/A')}")
@@ -1451,7 +1449,7 @@ class GraphManager:
             node_branch.add(f"值: {data.get('value', 'N/A')}")
             node_branch.add(f"来源: {data.get('source', 'N/A')}")
 
-    def _add_target_artifact_details(self, node_branch, data: Dict[str, Any]) -> None:
+    def _add_target_artifact_details(self, node_branch, data: dict[str, Any]) -> None:
         artifact_data = data.get("data", {})
         node_branch.add(f"产物: {artifact_data.get('value', 'N/A')}")
         node_branch.add(f"来源: {artifact_data.get('source', 'N/A')}")
@@ -1459,7 +1457,7 @@ class GraphManager:
             node_branch.add(f"产物: {data.get('value', 'N/A')}")
             node_branch.add(f"来源: {data.get('source', 'N/A')}")
 
-    def _add_node_details(self, node_branch, node_type: str, data: Dict[str, Any]) -> None:
+    def _add_node_details(self, node_branch, node_type: str, data: dict[str, Any]) -> None:
         from rich.markup import escape
         if node_type == "Evidence":
             node_branch.add(f"来源: {escape(str(data.get('source_step_id', data.get('source', 'N/A'))))}")
@@ -1524,7 +1522,7 @@ class GraphManager:
             node_status = data.get("status", "N/A")
             node_confidence = data.get("confidence", "N/A")
             style = self._get_node_style(node_type, node_status, node_confidence)
-            
+
             safe_node_id = escape(str(node_id))
             node_label = f"[{style}]{safe_node_id}[/]" if style else safe_node_id
             node_label += f" (类型: {escape(str(node_type))})"
@@ -1545,7 +1543,7 @@ class GraphManager:
                 edges_tree.add(edge_label)
         console.print(tree)
 
-    def _build_subtask_payload(self, description: str, priority: int, reason: str, completion_criteria: str, mission_briefing: Optional[Dict], max_steps: Optional[int] = None) -> Dict[str, Any]:
+    def _build_subtask_payload(self, description: str, priority: int, reason: str, completion_criteria: str, mission_briefing: dict | None, max_steps: int | None = None) -> dict[str, Any]:
         return {
             "type": "subtask",
             "description": description,
@@ -1569,13 +1567,13 @@ class GraphManager:
             "max_steps": max_steps,
         }
 
-    def get_subtask_conversation_history(self, subtask_id: str) -> List[Dict[str, Any]]:
+    def get_subtask_conversation_history(self, subtask_id: str) -> list[dict[str, Any]]:
         if not self.graph.has_node(subtask_id):
             raise NodeNotFoundError(f"子任务 {subtask_id} 不存在于图中。")
         self._ensure_node_defaults(subtask_id)
         return self.graph.nodes[subtask_id].get("conversation_history", [])
 
-    def update_subtask_conversation_history(self, subtask_id: str, history: List[Dict[str, Any]]):
+    def update_subtask_conversation_history(self, subtask_id: str, history: list[dict[str, Any]]):
         if not self.graph.has_node(subtask_id):
             raise NodeNotFoundError(f"子任务 {subtask_id} 不存在于图中。")
         self.graph.nodes[subtask_id]["conversation_history"] = history
@@ -1593,21 +1591,21 @@ class GraphManager:
         self.graph.nodes[subtask_id]["turn_counter"] = counter
         self._sync_node(subtask_id, 'task')
 
-    def get_subtask_last_step_ids(self, subtask_id: str) -> List[str]:
+    def get_subtask_last_step_ids(self, subtask_id: str) -> list[str]:
         """获取子任务的最后执行步骤ID列表，用于恢复执行时续接执行链。"""
         if not self.graph.has_node(subtask_id):
             raise NodeNotFoundError(f"子任务 {subtask_id} 不存在于图中。")
         self._ensure_node_defaults(subtask_id)
         return self.graph.nodes[subtask_id].get("last_step_ids", [])
 
-    def update_subtask_last_step_ids(self, subtask_id: str, step_ids: List[str]):
+    def update_subtask_last_step_ids(self, subtask_id: str, step_ids: list[str]):
         """更新子任务的最后执行步骤ID列表，用于下次恢复执行时续接执行链。"""
         if not self.graph.has_node(subtask_id):
             raise NodeNotFoundError(f"子任务 {subtask_id} 不存在于图中。")
         self.graph.nodes[subtask_id]["last_step_ids"] = step_ids
         self._sync_node(subtask_id, 'task')
 
-    def _build_execution_payload(self, parent_id: str, thought: str, action: Dict, status: str, hypothesis_update: Optional[Dict] = None) -> Dict[str, Any]:
+    def _build_execution_payload(self, parent_id: str, thought: str, action: dict, status: str, hypothesis_update: dict | None = None) -> dict[str, Any]:
         return {
             "type": "execution_step",
             "parent": parent_id,
@@ -1675,10 +1673,10 @@ class GraphManager:
                     queue.append(successor)
         return False
 
-    def _collect_execution_steps(self, subtask_id: str) -> List[str]:
+    def _collect_execution_steps(self, subtask_id: str) -> list[str]:
         visited = set()
         queue = [subtask_id]
-        collected: List[str] = []
+        collected: list[str] = []
         while queue:
             current = queue.pop()
             for successor in self.graph.successors(current):
@@ -1758,7 +1756,7 @@ class GraphManager:
         subtask_data["execution_summary_updated_at"] = time.time()
         return summary
 
-    def build_prompt_context(self, subtask_id: str, include_relevant_causal_context: bool = True) -> Dict[str, Any]:
+    def build_prompt_context(self, subtask_id: str, include_relevant_causal_context: bool = True) -> dict[str, Any]:
         if not self.graph.has_node(subtask_id):
             raise NodeNotFoundError(f"子任务 {subtask_id} 不存在于图中。")
         self._ensure_node_defaults(subtask_id)
@@ -1771,7 +1769,7 @@ class GraphManager:
             if self.graph.nodes[dep_id].get("type") == "subtask":
                 dep_data = self.graph.nodes[dep_id]
                 artifacts = list(dep_data.get("artifacts", []))
-                nodes_produced: List[str] = []
+                nodes_produced: list[str] = []
                 try:
                     for a in artifacts[:10]:
                         if isinstance(a, dict):
@@ -1781,7 +1779,7 @@ class GraphManager:
                 except Exception:
                     pass
                 summary_text = dep_data.get("summary")
-                key_findings: List[str] = []
+                key_findings: list[str] = []
                 try:
                     existing_kf = dep_data.get("key_findings")
                     if isinstance(existing_kf, list) and existing_kf:
@@ -1837,8 +1835,8 @@ class GraphManager:
             "proposed_changes": list(subtask_data.get("proposed_changes", [])),
         }
 
-    def _find_success_trigger_node(self) -> Optional[str]:
-        success_trigger_node: Optional[str] = None
+    def _find_success_trigger_node(self) -> str | None:
+        success_trigger_node: str | None = None
         confirmed_vulns = [n for n, d in self.causal_graph.nodes(data=True) if d.get("node_type") == "ConfirmedVulnerability"]
         if confirmed_vulns:
             success_trigger_node_id = confirmed_vulns[0]
@@ -1851,7 +1849,7 @@ class GraphManager:
                     f"Could not trace ConfirmedVulnerability {success_trigger_node_id} back to a step in the main graph."
                 )
         if not success_trigger_node:
-            artifact_node_id: Optional[str] = None
+            artifact_node_id: str | None = None
             for node, data in self.causal_graph.nodes(data=True):
                 if (data.get("node_type") == "TargetArtifact") or (data.get("type") == "target_artifact"):
                     trigger_step_id = data.get("source_step_id")
@@ -1892,7 +1890,7 @@ class GraphManager:
             if u in successful_path_nodes and v in successful_path_nodes:
                 simplified_graph.add_edge(u, v, type=data.get("type"))
 
-    def get_simplified_graph(self) -> Dict[str, Any]:
+    def get_simplified_graph(self) -> dict[str, Any]:
         simplified_graph = nx.DiGraph()
         success_trigger_node = self._find_success_trigger_node()
         if not success_trigger_node:
@@ -1908,7 +1906,7 @@ class GraphManager:
         return nx.descendants(self.graph, node_id)
 
     def is_goal_achieved(self) -> bool:
-        def _is_goal_node(node_data: Dict[str, Any]) -> bool:
+        def _is_goal_node(node_data: dict[str, Any]) -> bool:
             if bool(node_data.get("is_goal_achieved")):
                 return True
             status_value = str(node_data.get("status", "")).strip().lower()
@@ -1918,7 +1916,7 @@ class GraphManager:
             if _is_goal_node(data):
                 logging.debug(f"Goal achieved: Node {node_id} flagged as goal achieved.")
                 return True
-        
+
         for node_id, data in self.causal_graph.nodes(data=True):
             if _is_goal_node(data):
                 logging.debug(f"Goal achieved: Causal node {node_id} flagged as goal achieved.")

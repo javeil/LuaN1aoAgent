@@ -8,8 +8,8 @@ Markdown分块器 - 支持结构化和语义分块
 """
 
 import re
-from typing import List, Dict, Any, Tuple
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
@@ -18,7 +18,7 @@ class Chunk:
 
     id: str  # 统一格式: {doc_id}::chunk::{chunk_index}
     content: str
-    metadata: Dict[str, Any]
+    metadata: dict[str, Any]
     doc_id: str
     chunk_index: int
     chunk_type: str = "text"  # 分块类型: text, code, header, etc.
@@ -36,7 +36,7 @@ class MarkdownChunker:
         if self.chunk_overlap >= self.max_chunk_size:
             raise ValueError("chunk_overlap must be smaller than max_chunk_size.")
 
-    def _split_by_headers(self, content: str) -> List[Tuple[str, str]]:
+    def _split_by_headers(self, content: str) -> list[tuple[str, str]]:
         """按Markdown标题分割。"""
         # 匹配各级标题
         header_pattern = r"^(#{1,6})\s+(.+)$"
@@ -61,7 +61,7 @@ class MarkdownChunker:
 
         return parts
 
-    def _split_by_code_blocks(self, content: str) -> List[str]:
+    def _split_by_code_blocks(self, content: str) -> list[str]:
         """
         按代码块分割并保留代码块本身。
         返回的列表包含普通文本段和代码段，顺序一致。
@@ -73,11 +73,11 @@ class MarkdownChunker:
         # 去除空字符串，保持原始顺序
         return [p for p in parts if p]
 
-    def _split_by_semantic_boundaries(self, content: str) -> List[str]:
+    def _split_by_semantic_boundaries(self, content: str) -> list[str]:
         """按语义边界分割（句子、段落），并支持重叠。"""
         # 使用更通用的文本分割器，例如按句子或段落
         # 这里为了简化，我们仍然以段落为基础，但逻辑会改变
-        
+
         # 简单的按字符分割，更可靠的实现需要考虑句子边界
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=self.max_chunk_size,
@@ -86,22 +86,22 @@ class MarkdownChunker:
         )
         return text_splitter.split_text(content)
 
-    def chunk(self, doc_id: str, content: str) -> List[Chunk]:
+    def chunk(self, doc_id: str, content: str) -> list[Chunk]:
         """
         将Markdown文档内容分块。
         这个实现是一个简化的例子，可以根据需要扩展。
         """
         # 这是一个简化的chunk逻辑，实际应用中可能需要更复杂的结构化解析
         # 例如，先按标题分割，再在每个部分内按代码和语义分割
-        
+
         # 示例：直接使用语义边界分割
         text_chunks = self._split_by_semantic_boundaries(content)
-        
+
         chunks = []
         for i, text_chunk in enumerate(text_chunks):
             if not text_chunk.strip():
                 continue
-            
+
             chunk_id = f"{doc_id}::chunk::{i}"
             chunks.append(
                 Chunk(
@@ -114,7 +114,7 @@ class MarkdownChunker:
                     position=i, # 简化处理
                 )
             )
-            
+
         return chunks
 
 
@@ -127,7 +127,7 @@ class RecursiveCharacterTextSplitter:
         self.chunk_overlap = chunk_overlap
         self._length_function = length_function
 
-    def split_text(self, text: str) -> List[str]:
+    def split_text(self, text: str) -> list[str]:
         if len(text) <= self.chunk_size:
             return [text]
 
@@ -137,11 +137,11 @@ class RecursiveCharacterTextSplitter:
             end_index = start_index + self.chunk_size
             chunk = text[start_index:end_index]
             chunks.append(chunk)
-            
+
             # 如果已经是最后一块，则退出
             if end_index >= len(text):
                 break
-                
+
             # 移动到下一个块的起始位置
             start_index += self.chunk_size - self.chunk_overlap
 
@@ -151,7 +151,7 @@ class RecursiveCharacterTextSplitter:
         """生成统一的chunk ID。"""
         return f"{doc_id}::chunk::{chunk_index:04d}"
 
-    def chunk_document(self, doc_id: str, content: str) -> List[Chunk]:
+    def chunk_document(self, doc_id: str, content: str) -> list[Chunk]:
         """
         主分块方法 - 优化分块策略。
         1. 首先按代码块分割，保护代码完整性

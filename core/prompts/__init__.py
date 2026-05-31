@@ -7,10 +7,10 @@ Core Prompts Module
 from core.prompts.manager import PromptManager
 from core.prompts.renderers import (
     render_causal_graph,
-    render_failure_patterns,
-    render_key_facts,
     render_dependencies_summary,
     render_domain_knowledge,
+    render_failure_patterns,
+    render_key_facts,
 )
 
 __all__ = [

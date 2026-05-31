@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """LuaN1ao Agent - 基于大模型的自主渗透测试系统主控入口.
 
 本模块实现了P-E-R (Planner-Executor-Reflector) 架构的核心控制逻辑,
@@ -21,63 +20,63 @@
 
 # agent.py
 # LuaN1ao Agent 主控入口 (P-E-R 架构)
+import argparse
+import asyncio
+import copy
 import json
 import os
+import subprocess
 import sys
-import uuid
-import time
-import asyncio
-import argparse
 import tempfile
-import copy
+import time
+import uuid
 from collections import defaultdict
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import Any
+
 import httpx
-import subprocess
 import psutil
-
 from rich.console import Console
-from rich.panel import Panel
-from rich.table import Table
-from rich.live import Live
-from rich.status import Status
 from rich.markup import escape
+from rich.panel import Panel
 
-from core.console import set_console, init_console_with_file, console_proxy as console
-from llm.llm_client import LLMClient
-from tools.mcp_client import initialize_sessions, close_async_sessions
-from core.graph_manager import GraphManager
-from core.planner import Planner
-from core.reflector import Reflector
-from core.executor import run_executor_cycle
-from core.data_contracts import PlannerContext, ReflectorContext
-from tools import mcp_service
-from core.tool_manager import tool_manager
-from core.intervention import intervention_manager
 from conf.config import (
-    PLANNER_HISTORY_WINDOW,
-    REFLECTOR_HISTORY_WINDOW,
-    WEB_HOST as DEFAULT_WEB_HOST,
-    WEB_PORT as DEFAULT_WEB_PORT,
+    GLOBAL_MAX_CYCLES,
+    GLOBAL_MAX_TOKEN_USAGE,
+    HUMAN_IN_THE_LOOP,
+    KNOWLEDGE_SERVICE_HOST,
     KNOWLEDGE_SERVICE_PORT,
     KNOWLEDGE_SERVICE_URL,
-    KNOWLEDGE_SERVICE_HOST,
     OUTPUT_MODE,
-    HUMAN_IN_THE_LOOP,
-    GLOBAL_MAX_CYCLES,
-    GLOBAL_MAX_TOKEN_USAGE
+    PLANNER_HISTORY_WINDOW,
+    REFLECTOR_HISTORY_WINDOW,
 )
+from conf.config import WEB_HOST as DEFAULT_WEB_HOST
+from conf.config import WEB_PORT as DEFAULT_WEB_PORT
+from core.console import console_proxy as console
+from core.console import init_console_with_file, set_console
+from core.data_contracts import PlannerContext, ReflectorContext
 from core.events import broker
+from core.executor import run_executor_cycle
+from core.graph_manager import GraphManager
+from core.intervention import intervention_manager
+from core.planner import Planner
+from core.reflector import Reflector
+from core.tool_manager import tool_manager
+from llm.llm_client import LLMClient
+from tools.mcp_client import close_async_sessions, initialize_sessions
+
 try:
     from web.server import register_graph
 except Exception:
     register_graph = None
 
-from core.console import sanitize_for_rich
-import core.database.utils
 import signal
+
+import core.database.utils
+from core.console import sanitize_for_rich
 from core.database.utils import add_log, schedule_coroutine
+
 
 def signal_handler(sig, frame):
     """Handle termination signals to ensure logs are saved via finally block."""
@@ -99,12 +98,12 @@ def generate_task_id() -> str:
 
 class KnowledgeServiceManager:
     """知识服务生命周期管理器 (Context Manager & Singleton pattern)"""
-    
+
     def __init__(self, console: Console):
         self.console = console
-        self.process: Optional[subprocess.Popen] = None
+        self.process: subprocess.Popen | None = None
         self._lock = asyncio.Lock()
-        
+
     async def _check_health(self) -> bool:
         """检查知识服务是否运行并且健康。"""
         try:
@@ -112,9 +111,8 @@ class KnowledgeServiceManager:
                 response = await client.get(f"{KNOWLEDGE_SERVICE_URL}/health", timeout=2)
                 if response.status_code == 200 and response.json().get("status") == "healthy":
                     return True
-                else:
-                    self.console.print(f"[bold yellow]⚠️ 知识服务响应不健康: {response.status_code} - {response.text}[/bold yellow]")
-                    return False
+                self.console.print(f"[bold yellow]⚠️ 知识服务响应不健康: {response.status_code} - {response.text}[/bold yellow]")
+                return False
         except httpx.RequestError:
             return False
 
@@ -157,7 +155,7 @@ class KnowledgeServiceManager:
                 sys.executable, "-m", "uvicorn", "rag.knowledge_service:app",
                 "--host", "0.0.0.0", "--port", str(KNOWLEDGE_SERVICE_PORT)
             ]
-            
+
             try:
                 log_pout = open(os.path.join(tempfile.gettempdir(), 'knowledge_service.log'), 'w')
                 self.process = subprocess.Popen(
@@ -167,13 +165,13 @@ class KnowledgeServiceManager:
                     start_new_session=True # 脱离当前进程组
                 )
                 self.console.print(f"[bold green]启动知识服务进程 (PID: {self.process.pid})[/bold green]")
-                
+
                 # 等待服务启动
                 for _ in range(10):  # 最多等待 10*0.5 = 5秒
                     await asyncio.sleep(0.5)
                     if await self._check_health():
                         return True
-                        
+
                 self.console.print("[bold red]❌ 知识服务启动超时。[/bold red]")
                 return False
             except Exception as e:
@@ -192,7 +190,7 @@ class KnowledgeServiceManager:
             self.process = None
 
 # 全局单例管理器
-knowledge_manager: Optional[KnowledgeServiceManager] = None
+knowledge_manager: KnowledgeServiceManager | None = None
 
 async def ensure_knowledge_service(console: Console) -> bool:
     """外部调用的快捷方法"""
@@ -208,7 +206,7 @@ async def stop_knowledge_service():
         knowledge_manager.stop()
 
 
-def _aggregate_intelligence(completed_reflections: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+def _aggregate_intelligence(completed_reflections: dict[str, dict[str, Any]]) -> dict[str, Any]:
     """
     汇总多个反思器输出为情报摘要.
 
@@ -288,7 +286,7 @@ def _is_goal_achieved_status(status: Any) -> bool:
     """兼容 legacy 状态值，统一识别 goal_achieved。"""
     return str(status or "").strip().lower() == "goal_achieved"
 
-def process_graph_commands(operations: List[Dict], graph_manager: GraphManager) -> None:
+def process_graph_commands(operations: list[dict], graph_manager: GraphManager) -> None:
     """
     处理图操作指令列表. 
     
@@ -415,7 +413,7 @@ def process_graph_commands(operations: List[Dict], graph_manager: GraphManager) 
                         style="bold yellow"
                     )
                     console.print(
-                        f"   📋 原因: Reflector已判定此任务目标达成，状态不可逆转。",
+                        "   📋 原因: Reflector已判定此任务目标达成，状态不可逆转。",
                         style="yellow"
                     )
                     console.print(
@@ -483,10 +481,10 @@ def process_graph_commands(operations: List[Dict], graph_manager: GraphManager) 
             console.print(f"❌ 未知的图指令: {command}", style="red")
 
 def validate_causal_graph_updates(
-    updates: Dict[str, List[Dict]],
+    updates: dict[str, list[dict]],
     graph_manager: GraphManager,
-    subtask_id: Optional[str] = None
-) -> Dict[str, List[Dict]]:
+    subtask_id: str | None = None
+) -> dict[str, list[dict]]:
     """
     校验因果图谱更新的完整性. 
     
@@ -512,7 +510,7 @@ def validate_causal_graph_updates(
     nodes_to_add_ids = {n.get("id") for n in nodes_to_add if n.get("id")}
 
     # 2. 收集暂存节点（仅当前子任务，若提供）以支持自动提升
-    staged_nodes_by_id: Dict[str, Dict] = {}
+    staged_nodes_by_id: dict[str, dict] = {}
     if subtask_id and graph_manager.graph.has_node(subtask_id):
         try:
             staged_list = graph_manager.graph.nodes[subtask_id].get("staged_causal_nodes", []) or []
@@ -546,7 +544,7 @@ def validate_causal_graph_updates(
 
     # 4. 重新计算有效ID集合并过滤边
     valid_temp_node_ids = existing_node_ids.union(nodes_to_add_ids)
-    validated_edges: List[Dict] = []
+    validated_edges: list[dict] = []
     for edge in edges_to_add:
         source_id = edge.get("source_id")
         target_id = edge.get("target_id")
@@ -560,10 +558,10 @@ def validate_causal_graph_updates(
     return {"nodes": nodes_to_add, "edges": validated_edges}
 
 def process_causal_graph_commands(
-    updates: Dict[str, List[Dict]],
+    updates: dict[str, list[dict]],
     graph_manager: GraphManager,
-    subtask_id: Optional[str] = None,
-) -> Dict[str, str]:
+    subtask_id: str | None = None,
+) -> dict[str, str]:
     """
     处理因果图谱的结构化更新. 
     
@@ -617,7 +615,7 @@ def process_causal_graph_commands(
             graph_manager.add_causal_edge(source_perm_id, target_perm_id, label, **edge_data)
             # Trigger confidence propagation with LLM-driven evidence strength
             graph_manager.update_hypothesis_confidence(
-                target_perm_id, 
+                target_perm_id,
                 label,
                 evidence_strength=evidence_strength
             )
@@ -628,8 +626,8 @@ def process_causal_graph_commands(
 
 def save_logs(
     log_dir: str,
-    metrics: Dict,
-    run_log: List,
+    metrics: dict,
+    run_log: list,
     final_save: bool = False
 ) -> None:
     """
@@ -662,9 +660,9 @@ def save_logs(
     try:
         metrics_path = os.path.join(log_dir, "metrics.json")
         if os.path.exists(metrics_path):
-            with open(metrics_path, 'r', encoding='utf-8') as f:
+            with open(metrics_path, encoding='utf-8') as f:
                 existing_metrics = json.load(f)
-            
+
             # Key metrics that must be monotonic
             monotonic_keys = ["cost_cny", "total_tokens", "prompt_tokens", "completion_tokens"]
             for key in monotonic_keys:
@@ -673,7 +671,7 @@ def save_logs(
                 if isinstance(existing_val, (int, float)) and isinstance(new_val, (int, float)):
                     if existing_val > new_val:
                         metrics_copy[key] = existing_val
-                        
+
             # Also restore success flags if they were present on disk but missing/false in memory
             # (e.g. if updated by a parallel monitor)
             if existing_metrics.get("success") and not metrics_copy.get("success"):
@@ -699,7 +697,7 @@ def save_logs(
     if final_save:
         console.print(Panel(f"Final logs and metrics saved to {log_dir}", title="[bold green]Run Finished[/bold green]"))
 
-def update_global_metrics(global_metrics: Dict, cycle_metrics: Dict):
+def update_global_metrics(global_metrics: dict, cycle_metrics: dict):
     """
     更新全局指标。
     """
@@ -707,12 +705,12 @@ def update_global_metrics(global_metrics: Dict, cycle_metrics: Dict):
     cycle_prompt = cycle_metrics.get("prompt_tokens", 0)
     cycle_completion = cycle_metrics.get("completion_tokens", 0)
     cycle_total = cycle_metrics.get("total_tokens", cycle_prompt + cycle_completion)
-    
+
     global_metrics["total_tokens"] += cycle_total
     global_metrics["prompt_tokens"] += cycle_prompt
     global_metrics["completion_tokens"] += cycle_completion
     global_metrics["cost_cny"] += cycle_metrics.get("cost_cny", 0)
-    
+
     # 累加步数（根据 cycle_metrics 中的类型）
     if "execution_steps" in cycle_metrics:
         global_metrics["execution_steps"] += cycle_metrics["execution_steps"]
@@ -720,14 +718,14 @@ def update_global_metrics(global_metrics: Dict, cycle_metrics: Dict):
         global_metrics["plan_steps"] += cycle_metrics["plan_steps"]
     if "reflect_steps" in cycle_metrics:
         global_metrics["reflect_steps"] += cycle_metrics["reflect_steps"]
-        
+
     # Fix: tool_calls is a dict, cannot use +=
     if "tool_calls" in cycle_metrics:
         if "tool_calls" not in global_metrics:
             global_metrics["tool_calls"] = defaultdict(int)
         for tool, count in cycle_metrics["tool_calls"].items():
             global_metrics["tool_calls"][tool] += count
-    
+
     # 记录其他特定指标
     if "artifacts_found" in cycle_metrics:
         global_metrics["artifacts_found"] = cycle_metrics["artifacts_found"]
@@ -797,9 +795,9 @@ def _extract_failure_pattern(audit_result, key_findings):
     return None
 
 async def compress_planner_context_if_needed(
-    planner_context: "PlannerContext", 
-    llm: "LLMClient", 
-    metrics: Optional[Dict] = None
+    planner_context: "PlannerContext",
+    llm: "LLMClient",
+    metrics: dict | None = None
 ) -> None:
     """
     如果 Planner 历史过长，进行总结压缩。
@@ -807,33 +805,33 @@ async def compress_planner_context_if_needed(
     if not getattr(planner_context, "_needs_compression", False):
         return
 
-    console.print(f"🔄 Planner 对话历史过长，开始进行状态压缩总结...", style="dim")
-    
+    console.print("🔄 Planner 对话历史过长，开始进行状态压缩总结...", style="dim")
+
     # 将 history 转换为文本列表供总结使用
     history_to_compress = []
     for attempt in planner_context.planning_history:
         record = f"Strategy: {attempt.strategy}\nGoal: {attempt.goal}\nOutcome: {attempt.outcome_summary}"
         history_to_compress.append({"role": "assistant", "content": record})
-    
+
     summary, summarization_metrics = await llm.summarize_conversation(history_to_compress)
-    
+
     # 累加指标
     if metrics is not None and summarization_metrics:
         update_global_metrics(metrics, summarization_metrics)
 
     planner_context.compressed_history_summary = summary
     planner_context.compression_count += 1
-    
+
     # 保持窗口大小并重置标志
     planner_context.planning_history = planner_context.planning_history[-PLANNER_HISTORY_WINDOW:]
     planner_context._needs_compression = False
-    
+
     console.print(f"✅ Planner 上下文压缩完成 (次数: {planner_context.compression_count})", style="dim")
 
 async def compress_reflector_context_if_needed(
-    reflector_context: "ReflectorContext", 
-    llm: "LLMClient", 
-    metrics: Optional[Dict] = None
+    reflector_context: "ReflectorContext",
+    llm: "LLMClient",
+    metrics: dict | None = None
 ) -> None:
     """
     如果 Reflector 历史过长，进行总结压缩。
@@ -841,30 +839,30 @@ async def compress_reflector_context_if_needed(
     if not getattr(reflector_context, "_needs_compression", False):
         return
 
-    console.print(f"🔄 Reflector 对话历史过长，开始进行模式压缩总结...", style="dim")
-    
+    console.print("🔄 Reflector 对话历史过长，开始进行模式压缩总结...", style="dim")
+
     # 将 reflection_log 转换
     history_to_compress = []
     for insight in reflector_context.reflection_log:
         record = f"Subtask: {insight.subtask_id}\nStatus: {insight.normalized_status}\nInsight: {insight.key_insight}"
         history_to_compress.append({"role": "assistant", "content": record})
-    
+
     summary, summarization_metrics = await llm.summarize_conversation(history_to_compress)
-    
+
     # 累加指标
     if metrics is not None and summarization_metrics:
         update_global_metrics(metrics, summarization_metrics)
 
     reflector_context.compressed_reflection_summary = summary
     reflector_context.compression_count += 1
-    
+
     # 保持窗口大小并重置标志
     reflector_context.reflection_log = reflector_context.reflection_log[-REFLECTOR_HISTORY_WINDOW:]
     reflector_context._needs_compression = False
-    
+
     console.print(f"✅ Reflector 上下文压缩完成 (次数: {reflector_context.compression_count})", style="dim")
 
-def verify_and_handle_orphans(operations: List[Dict], graph_manager: GraphManager, console: Console) -> List[Dict]:
+def verify_and_handle_orphans(operations: list[dict], graph_manager: GraphManager, console: Console) -> list[dict]:
     """
     在执行图操作前，验证Planner是否正确处理了孤儿节点。
     如果没有，则自动生成修复指令，作为代码级安全网。
@@ -872,9 +870,7 @@ def verify_and_handle_orphans(operations: List[Dict], graph_manager: GraphManage
     # 找出所有将被废弃的节点ID
     deprecated_node_ids = set()
     for op in operations:
-        if op.get("command") == "UPDATE_NODE" and op.get("updates", {}).get("status") == "deprecated":
-            deprecated_node_ids.add(op.get("node_id"))
-        elif op.get("command") == "DELETE_NODE": # 兼容旧的或直接的删除指令
+        if op.get("command") == "UPDATE_NODE" and op.get("updates", {}).get("status") == "deprecated" or op.get("command") == "DELETE_NODE":
             deprecated_node_ids.add(op.get("node_id"))
 
     if not deprecated_node_ids:
@@ -922,7 +918,7 @@ def verify_and_handle_orphans(operations: List[Dict], graph_manager: GraphManage
 
     return operations + fix_operations
 
-def get_next_executable_subtask_batch(graph: GraphManager) -> List[str]:
+def get_next_executable_subtask_batch(graph: GraphManager) -> list[str]:
     """获取下一个可并行执行的任务批次。
 
     注：`in_progress` 状态不纳入调度候选。正常执行流程中，asyncio.gather
@@ -949,7 +945,7 @@ def get_next_executable_subtask_batch(graph: GraphManager) -> List[str]:
     return executable_tasks
 
 
-async def handle_cli_approval(op_id: str, plan_data: List[Dict[str, Any]]):
+async def handle_cli_approval(op_id: str, plan_data: list[dict[str, Any]]):
     """
     处理 CLI 端的人工审批。
     与 Web 端审批并行运行，任何一方先提交决策即生效。
@@ -959,7 +955,7 @@ async def handle_cli_approval(op_id: str, plan_data: List[Dict[str, Any]]):
         return
 
     loop = asyncio.get_running_loop()
-    
+
     # 1. 展示计划概要
     console.print(Panel(f"待审批计划 ({len(plan_data)} ops):", title="[bold yellow]HITL CLI[/bold yellow]", style="yellow"))
     for i, op in enumerate(plan_data):
@@ -970,48 +966,48 @@ async def handle_cli_approval(op_id: str, plan_data: List[Dict[str, Any]]):
 
     console.print("\n请选择操作: [bold green]y[/bold green] (批准), [bold red]n[/bold red] (拒绝), [bold blue]m[/bold blue] (修改)")
     console.print("HITL > ", end="")
-    
+
     # 2. 阻塞等待输入 (运行在 executor 中以免阻塞主循环)
     try:
         while True:
             try:
                 # 稍微让出控制权，确保 Web Server 任务有机会运行
                 await asyncio.sleep(0.1)
-                
+
                 # 使用 sys.stdin.readline 替代 input，避免某些环境下的 GIL 或锁竞争问题
                 # 注意：readline 会保留换行符，需要 strip
                 line = await loop.run_in_executor(None, sys.stdin.readline)
                 if not line: # EOF
                     break
-                    
+
                 choice = line.strip().lower()
-                
+
                 if choice == 'y':
                     await intervention_manager.submit_decision(op_id, "APPROVE")
                     console.print("✅ CLI: 已批准计划。", style="green")
                     break
-                elif choice == 'n':
+                if choice == 'n':
                     await intervention_manager.submit_decision(op_id, "REJECT")
                     console.print("❌ CLI: 已拒绝计划。", style="red")
                     break
-                elif choice == 'm':
+                if choice == 'm':
                     # 修改模式：调用系统编辑器
-                    import tempfile
                     import os
                     import subprocess
-                    
+                    import tempfile
+
                     editor = os.getenv('EDITOR', 'vim')
                     with tempfile.NamedTemporaryFile(mode='w+', suffix='.json', delete=False) as tf:
                         json.dump(plan_data, tf, indent=2, ensure_ascii=False)
                         tf_path = tf.name
-                    
+
                     try:
                         console.print(f"正在打开编辑器 ({editor})...")
                         subprocess.call([editor, tf_path])
-                        
-                        with open(tf_path, 'r') as tf:
+
+                        with open(tf_path) as tf:
                             modified_data = json.load(tf)
-                        
+
                         await intervention_manager.submit_decision(op_id, "MODIFY", modified_data)
                         console.print("✏️ CLI: 已提交修改后的计划。", style="green")
                         os.unlink(tf_path)
@@ -1023,11 +1019,11 @@ async def handle_cli_approval(op_id: str, plan_data: List[Dict[str, Any]]):
                 else:
                     console.print("无效输入。请输入 y, n 或 m。", style="yellow")
                     console.print("HITL > ", end="")
-                
+
             except Exception as e:
                 console.print(f"[dim]CLI 输入错误: {e}[/dim]")
                 await asyncio.sleep(1) # 出错后避让
-                
+
     except asyncio.CancelledError:
         # 任务被取消（说明 Web 端已处理）
         console.print("\n[dim]Web 端已提交决策，CLI 审批取消。[/dim]")
@@ -1039,23 +1035,23 @@ async def run_standalone_react(goal: str, task_name: str, log_dir: str, args: ar
     绕过 P-E-R 架构，直接使用 Executor 执行全局任务。
     """
     console.print(Panel("启动纯 ReAct 模式 (Ablation Mode C)...", style="bold magenta"))
-    
+
     graph_manager = GraphManager(task_name, goal, op_id=op_id)
-    
+
     # 将整个任务封装为一个可以直接执行的子任务
     subtask_id = "global_react_execution"
-    graph_manager.graph.add_node(subtask_id, 
-        type="subtask", 
-        goal=goal, 
-        status="ready", 
+    graph_manager.graph.add_node(subtask_id,
+        type="subtask",
+        goal=goal,
+        status="ready",
         description="Global Execution in ReAct Mode"
     )
-    
+
     # 增加最大步数限制 (因为没有子任务拆分)
     # 不再修改全局配置，而是直接传递参数
-    react_max_steps = 50 
+    react_max_steps = 50
     console.print(f"ReAct 模式：设置最大步数为 {react_max_steps}", style="dim")
-    
+
     metrics = {
         "start_time": time.time(),
         "task_name": task_name,
@@ -1070,45 +1066,45 @@ async def run_standalone_react(goal: str, task_name: str, log_dir: str, args: ar
         "execute_steps": 1, # Single execution phase
         "ablation_mode": "react"
     }
-    
+
     run_log = []
     effective_output_mode = args.output_mode
 
     try:
         # Save initial log
         save_logs(log_dir, metrics, run_log)
-        
+
         # Run single executor cycle
-        console.print(Panel(f"开始执行全局 ReAct 循环...", title="Executor", style="bold blue"))
-        
+        console.print(Panel("开始执行全局 ReAct 循环...", title="Executor", style="bold blue"))
+
         # Use graph_manager's root goal description as briefing
         global_mission_briefing = f"Mission Goal: {goal}"
-        
+
         # Define real-time save callback to capture in-progress cost
-        def realtime_save(current_cycle_metrics: Dict = None):
+        def realtime_save(current_cycle_metrics: dict = None):
             # Create snapshot of global metrics
             # Use deepcopy to avoid polluting the main metrics accumulator with partial cycle data
-            snapshot_metrics = copy.deepcopy(metrics) 
+            snapshot_metrics = copy.deepcopy(metrics)
             if current_cycle_metrics:
                 update_global_metrics(snapshot_metrics, current_cycle_metrics)
             save_logs(log_dir, snapshot_metrics, run_log)
-        
+
         from core.executor import run_executor_cycle
         _, status, cycle_metrics = await run_executor_cycle(
-            goal, 
-            subtask_id, 
-            llm, 
+            goal,
+            subtask_id,
+            llm,
             graph_manager,
-            global_mission_briefing, 
+            global_mission_briefing,
             log_dir=log_dir,
             save_callback=lambda: save_logs(log_dir, metrics, run_log),
             output_mode=effective_output_mode,
             max_steps=react_max_steps, # Explicitly pass max steps
             disable_artifact_check=True # React mode should not stop on no new artifacts
         )
-        
+
         update_global_metrics(metrics, cycle_metrics)
-        
+
         # Check if success_info was updated by a tool or monitor during execution
         # React mode only succeeds if the flag is actually found/submitted, not just by finishing steps
         if metrics.get("success_info", {}).get("found"):
@@ -1121,7 +1117,7 @@ async def run_standalone_react(goal: str, task_name: str, log_dir: str, args: ar
                  console.print(Panel("ReAct 模式执行结束，但未找到 Flag。", style="yellow"))
             else:
                 console.print(Panel(f"ReAct 模式执行结束，状态: {status}", style="yellow"))
-            
+
     except Exception as e:
         console.print(Panel(f"ReAct 模式执行发生错误: {escape(str(e))}", style="bold red"))
         metrics["error"] = str(e)
@@ -1148,9 +1144,9 @@ async def main():
     parser.add_argument("--web-port", type=int, default=DEFAULT_WEB_PORT, help="Web service port (for display purposes only)")
     parser.add_argument("--op-id", type=str, help="Specify the operation ID for the current task (passed by Web UI)")
     parser.add_argument(
-        "--output-mode", 
-        type=str, 
-        choices=["simple", "default", "debug"], 
+        "--output-mode",
+        type=str,
+        choices=["simple", "default", "debug"],
         default=OUTPUT_MODE, # Use OUTPUT_MODE from config as default
         help="Console output mode: simple, default, debug"
     )
@@ -1228,12 +1224,12 @@ async def main():
         event_type = msg.get("event")
         if not event_type:
             return
-            
+
         # Only persist events that are useful for the frontend log
         if event_type.startswith("llm.") or event_type.startswith("execution.") or event_type == "graph.changed":
             # Extract content - simplify complex objects if needed
             content = msg.get("data") or msg.get("payload") or msg
-            
+
             # Use schedule_coroutine to run DB insert without blocking event loop
             schedule_coroutine(add_log(op_id, event_type, content))
 
@@ -1297,7 +1293,7 @@ async def main():
     try:
         # op_id already determined above
 
-        
+
         # Start the event consumer NOW that op_id is properly set
         asyncio.create_task(event_consumer(op_id))
 
@@ -1323,7 +1319,7 @@ async def main():
 
         # Initialize GraphManager
         graph_manager = GraphManager(task_name, goal, op_id=op_id)
-        
+
         # Update session status to running immediately after GraphManager is ready
         try:
             from core.database.utils import update_session_status
@@ -1331,10 +1327,10 @@ async def main():
             console.print(Panel(f"Session {op_id} 状态已更新到数据库: running", style="green"))
         except Exception as e:
             console.print(Panel(f"更新数据库状态失败: {e}", style="yellow"))
-        
+
         # Record deployment time (considered complete upon GraphManager initialization)
         metrics["deployment_time"] = time.time() - metrics["start_time"]
-        
+
         planner = Planner(llm, output_mode=effective_output_mode)
         reflector = Reflector(llm, output_mode=effective_output_mode)
 
@@ -1396,19 +1392,19 @@ async def main():
         # HITL: Initial plan approval
         if HUMAN_IN_THE_LOOP:
             op_id = llm.op_id
-            
+
             # Notify frontend of pending approval request
             try:
                 await broker.emit("intervention.required", {"op_id": op_id, "type": "plan_approval"}, op_id=op_id)
             except Exception:
                 pass
-            
+
             # Start CLI interaction task (competes with Web端)
             cli_task = asyncio.create_task(handle_cli_approval(op_id, initial_ops))
-                
+
             # Block until decision is made (unblocks when either side submits)
             decision = await intervention_manager.request_approval(op_id, initial_ops)
-            
+
             # Clean up CLI task
             if not cli_task.done():
                 cli_task.cancel()
@@ -1416,12 +1412,12 @@ async def main():
                     await cli_task
                 except asyncio.CancelledError:
                     pass
-            
+
             action = decision.get("action")
             if action == "REJECT":
                 console.print("[HITL] 用户拒绝了初始计划。任务终止。", style="bold red")
                 return # Exit task
-            elif action == "MODIFY":
+            if action == "MODIFY":
                 initial_ops = decision.get("data", [])
                 console.print("[HITL] 用户修改了初始计划，应用修改后的操作。", style="bold green")
             else:
@@ -1456,7 +1452,7 @@ async def main():
                 metrics["success"] = False
                 metrics["termination_reason"] = "global_max_cycles_exceeded"
                 break
-            
+
             if metrics.get("total_tokens", 0) > GLOBAL_MAX_TOKEN_USAGE:
                 console.print(Panel(f"达到全局最大 Token 消耗限制 ({GLOBAL_MAX_TOKEN_USAGE})。任务强制终止。", title="资源熔断", style="bold red"))
                 metrics["success"] = False
@@ -1500,15 +1496,15 @@ async def main():
                 if plan_data.get("global_mission_accomplished"):
                     console.print(Panel("🎉 Planner已宣布全局任务目标达成！任务结束。", title="[bold green]任务完成[/bold green]"))
                     metrics["success_info"] = {"found": True, "reason": "Global mission accomplished signal received from Planner."}
-                    
+
                     # 标记导致成功的节点（分层策略）
                     # 1. 从 Planner 获取成功子任务 ID
                     # 2. 从子任务节点读取 Reflector 标记的 critical_success_step_id
                     # 3. 回退：如果没有标记，使用该子任务下最后完成的步骤
-                    
+
                     goal_subtask_id = None
                     goal_step_id = None
-                    
+
                     # Step 1: 获取成功子任务 ID
                     goal_achieved_by = plan_data.get("goal_achieved_by")
                     if goal_achieved_by and graph_manager.graph.has_node(goal_achieved_by):
@@ -1523,7 +1519,7 @@ async def main():
                                 goal_subtask_id = subtask_id
                                 console.print(Panel(f"找到 goal_achieved 子任务: {goal_subtask_id}", style="blue"))
                                 break
-                        
+
                         if not goal_subtask_id:
                             # 再回退：最近完成的子任务
                             sorted_reflections = sorted(
@@ -1533,10 +1529,10 @@ async def main():
                             )
                             if sorted_reflections:
                                 goal_subtask_id = sorted_reflections[0][0]
-                    
+
                     if goal_subtask_id and graph_manager.graph.has_node(goal_subtask_id):
                         subtask_data = graph_manager.graph.nodes[goal_subtask_id]
-                        
+
                         # Step 2: 从子任务节点读取 Reflector 标记的 critical_success_step_id
                         critical_step = subtask_data.get("critical_success_step_id")
                         if critical_step and graph_manager.graph.has_node(critical_step):
@@ -1546,23 +1542,23 @@ async def main():
                             # Step 3 回退: 找该子任务下最后完成的 execution_step
                             last_step_id = None
                             last_step_time = 0
-                            
+
                             for node_id in graph_manager.graph.nodes():
                                 node_data = graph_manager.graph.nodes[node_id]
                                 node_type = node_data.get("type", "")
                                 parent = node_data.get("parent", "")
-                                
+
                                 if node_type == "execution_step" and parent == goal_subtask_id:
                                     if node_data.get("status") == "completed":
                                         completed_at = node_data.get("completed_at", 0)
                                         if completed_at and completed_at > last_step_time:
                                             last_step_time = completed_at
                                             last_step_id = node_id
-                            
+
                             if last_step_id:
                                 goal_step_id = last_step_id
                                 console.print(Panel(f"回退：使用最后完成的步骤 {goal_step_id}", style="yellow"))
-                        
+
                         # 标记成功节点
                         if goal_step_id:
                             graph_manager.update_node(goal_step_id, {"is_goal_achieved": True})
@@ -1571,16 +1567,16 @@ async def main():
                             # 没找到 execution_step，标记子任务本身
                             graph_manager.update_node(goal_subtask_id, {"is_goal_achieved": True})
                             console.print(Panel(f"✨ 子任务 {goal_subtask_id} 被标记为目标达成节点", style="yellow"))
-                    
+
                     # Process final graph operations (if any)
                     dynamic_ops = plan_data.get('graph_operations', [])
                     if dynamic_ops:
                         process_graph_commands(dynamic_ops, graph_manager)
-                    
+
                     # Critical fix: Update root node status to completed
                     graph_manager.update_node(graph_manager.task_id, {"status": "completed"})
                     console.print(Panel(f"根任务 {graph_manager.task_id} 状态已更新为 completed", style="green"))
-                    
+
                     # Update session status to completed in database
                     try:
                         from core.database.utils import update_session_status
@@ -1588,13 +1584,13 @@ async def main():
                         console.print(Panel(f"Session {llm.op_id} 状态已更新到数据库: completed", style="green"))
                     except Exception as e:
                         console.print(Panel(f"更新数据库状态失败: {e}", style="red"))
-                    
+
                     # Notify frontend of graph structure change
                     try:
                         await broker.emit("graph.changed", {"reason": "mission_accomplished"}, op_id=llm.op_id)
                     except Exception:
                         pass
-                    
+
                     break # Exit main loop
 
                 # Update Planner context status (new) and save full LLM prompt/response
@@ -1617,18 +1613,18 @@ async def main():
                     # HITL: Dynamic plan approval
                     if HUMAN_IN_THE_LOOP:
                         op_id = llm.op_id
-                        
+
                         try:
                             await broker.emit("intervention.required", {"op_id": op_id, "type": "plan_approval"}, op_id=op_id)
                         except Exception:
                             pass
-                            
+
                         # Start CLI interaction task
                         cli_task = asyncio.create_task(handle_cli_approval(op_id, dynamic_ops))
-                        
+
                         # Block until decision is made
                         decision = await intervention_manager.request_approval(op_id, dynamic_ops)
-                        
+
                         # Clean up CLI task
                         if not cli_task.done():
                             cli_task.cancel()
@@ -1636,7 +1632,7 @@ async def main():
                                 await cli_task
                             except asyncio.CancelledError:
                                 pass
-                        
+
                         action = decision.get("action")
                         if action == "REJECT":
                             console.print("[HITL] 用户拒绝了动态计划。跳过本次更新（可能导致停滞）。", style="bold red")
@@ -1693,10 +1689,9 @@ async def main():
                         "insight": {"type": "stall_analysis", "description": "The agent is stuck. A new high-level plan is required to find an alternative path."}
                     }
                     continue
-                else:
-                    # If goal is achieved, exit normally
-                    console.print(Panel("所有子任务已完成且目标已达成，任务结束。", title="任务完成", style="bold green"))
-                    break
+                # If goal is achieved, exit normally
+                console.print(Panel("所有子任务已完成且目标已达成，任务结束。", title="任务完成", style="bold green"))
+                break
 
             if not subtask_batch and not completed_reflections:
                  console.print(Panel("最终规划未能产生新的可执行任务，代理已尽力，任务结束。",
@@ -1710,7 +1705,7 @@ async def main():
             # Define real-time save callback shared by all parallel tasks
             # Note: In parallel execution, this may cause transient metric flip-flops in logs,
             # but ensures at least one active task's progress is visible.
-            def per_realtime_save(cycle_metrics: Dict = None):
+            def per_realtime_save(cycle_metrics: dict = None):
                 snapshot = copy.deepcopy(metrics)
                 if cycle_metrics:
                     update_global_metrics(snapshot, cycle_metrics)
@@ -1825,7 +1820,7 @@ async def main():
                     subtask_audit_status = audit_result.get("status", "FAILED")
                     # Convert to lowercase for consistent comparison
                     status_lower = str(subtask_audit_status).lower()
-                    
+
                     # Determine status: completed, incomplete, or failed
                     if status_lower in ["completed", "pass", "goal_achieved"]:
                         new_status = "completed"

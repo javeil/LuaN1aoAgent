@@ -4,7 +4,6 @@
 """
 
 import unicodedata
-from typing import Set, List
 
 
 class SymbolUtils:
@@ -30,7 +29,7 @@ class SymbolUtils:
         return category.startswith("P")  # 所有标点符号
 
     @staticmethod
-    def detect_categories(text: str) -> Set[str]:
+    def detect_categories(text: str) -> set[str]:
         """检测文本中的符号类别。"""
         categories = set()
 
@@ -44,7 +43,7 @@ class SymbolUtils:
         return categories
 
     @staticmethod
-    def generate_encodings(text: str) -> List[str]:
+    def generate_encodings(text: str) -> list[str]:
         """为文本中的符号生成编码变体。"""
         variants = []
 
@@ -55,7 +54,7 @@ class SymbolUtils:
                     url_encoded = "".join(f"%{ord(c):02X}" for c in char)
                     variants.append(url_encoded)
                     variants.append(url_encoded.lower())
-                except (ValueError, TypeError) as e:
+                except (ValueError, TypeError):
                     # 忽略无法URL编码的字符
                     pass
 
@@ -68,7 +67,7 @@ class SymbolUtils:
         return list(set(variants))  # 去重
 
     @staticmethod
-    def extract_symbols(text: str) -> List[str]:
+    def extract_symbols(text: str) -> list[str]:
         """提取文本中的所有符号。"""
         symbols = []
 
@@ -79,18 +78,18 @@ class SymbolUtils:
         return symbols
 
 
-def detect_symbol_categories(text: str) -> Set[str]:
+def detect_symbol_categories(text: str) -> set[str]:
     """兼容性函数 - 检测符号类别。"""
     return SymbolUtils.detect_categories(text)
 
 
-def generate_all_symbol_variants() -> List[str]:
+def generate_all_symbol_variants() -> list[str]:
     """兼容性函数 - 生成所有符号变体。"""
     all_chars = "".join(config["chars"] for config in SymbolUtils.SYMBOL_CATEGORIES.values())
     return SymbolUtils.generate_encodings(all_chars)
 
 
-def get_important_symbols() -> List[str]:
+def get_important_symbols() -> list[str]:
     """兼容性函数 - 获取重要符号。"""
     all_chars = "".join(config["chars"] for config in SymbolUtils.SYMBOL_CATEGORIES.values())
     return list(all_chars) + generate_all_symbol_variants()

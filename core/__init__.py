@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """LuaN1ao核心模块.
 
 本包包含LuaN1ao系统的核心组件，实现P-E-R架构的主要功能。
@@ -16,12 +15,12 @@
     - console: 控制台工具
 """
 
-from core.planner import Planner
-from core.executor import run_executor_cycle
-from core.reflector import Reflector
-from core.graph_manager import GraphManager
-from core.tool_manager import tool_manager, ToolManager
 from core.events import broker
+from core.executor import run_executor_cycle
+from core.graph_manager import GraphManager
+from core.planner import Planner
+from core.reflector import Reflector
+from core.tool_manager import ToolManager, tool_manager
 
 __all__ = [
     "Planner",
