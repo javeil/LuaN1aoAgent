@@ -1326,7 +1326,7 @@ async def main():
             await update_session_status(op_id, "running")
             console.print(Panel(f"Session {op_id} 状态已更新到数据库: running", style="green"))
         except Exception as e:
-            console.print(Panel(f"更新数据库状态失败: {e}", style="yellow"))
+            console.print(Panel(f"更新数据库状态失败: {escape(str(e))}", style="yellow"))
 
         # Record deployment time (considered complete upon GraphManager initialization)
         metrics["deployment_time"] = time.time() - metrics["start_time"]
@@ -1438,7 +1438,7 @@ async def main():
             try:
                 graph_manager.print_causal_graph(console, max_nodes=100)
             except Exception as e:
-                console.print(Panel(f"打印因果图失败: {e}", title="因果图错误", style="red"))
+                console.print(Panel(f"打印因果图失败: {escape(str(e))}", title="因果图错误", style="red"))
         run_log.append({"event": "initial_plan_generated", "plan": initial_ops, "timestamp": time.time()})
 
         # 3. Execute-Reflect-Plan Loop
@@ -1583,7 +1583,7 @@ async def main():
                         await update_session_status(llm.op_id, "completed")
                         console.print(Panel(f"Session {llm.op_id} 状态已更新到数据库: completed", style="green"))
                     except Exception as e:
-                        console.print(Panel(f"更新数据库状态失败: {e}", style="red"))
+                        console.print(Panel(f"更新数据库状态失败: {escape(str(e))}", style="red"))
 
                     # Notify frontend of graph structure change
                     try:
@@ -1661,7 +1661,7 @@ async def main():
                         try:
                             graph_manager.print_causal_graph(console, max_nodes=100)
                         except Exception as e:
-                            console.print(Panel(f"打印因果图失败: {e}", title="因果图错误", style="red"))
+                            console.print(Panel(f"打印因果图失败: {escape(str(e))}", title="因果图错误", style="red"))
 
                 # Periodically save logs after each full P-E-R cycle
                 if effective_output_mode in ["default", "debug"]:
@@ -1806,7 +1806,7 @@ async def main():
                                 console.print(Panel(f"子任务 {subtask_id} 因果图更新:", title="因果图更新", style="green"))
                                 graph_manager.print_causal_graph(console, max_nodes=100)
                             except Exception as e:
-                                console.print(Panel(f"打印因果图失败: {e}", title="因果图错误", style="red"))
+                                console.print(Panel(f"打印因果图失败: {escape(str(e))}", title="因果图错误", style="red"))
 
                     # Process key facts
                     key_facts = reflection_output.get("key_facts", [])
