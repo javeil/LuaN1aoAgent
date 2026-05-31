@@ -404,9 +404,9 @@ class LLMClient:
                 elif "tpm rate limit exceeded" in str(e):
                     api_call_retries += 1
                     if api_call_retries > MAX_API_CALL_RETRIES:
-                        self.console.print("[bold red]API rate limit exceeded. Max retries reached.[/bold red]")
+                        self._get_console().print("[bold red]API rate limit exceeded. Max retries reached.[/bold red]")
                         raise e
-                    self.console.print(
+                    self._get_console().print(
                         f"[bold yellow]API rate limit exceeded. Waiting 10 seconds to retry... ({api_call_retries}/{MAX_API_CALL_RETRIES})[/bold yellow]"
                     )
                     await asyncio.sleep(10)

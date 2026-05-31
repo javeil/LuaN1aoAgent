@@ -144,11 +144,6 @@ class RecursiveCharacterTextSplitter:
                 
             # 移动到下一个块的起始位置
             start_index += self.chunk_size - self.chunk_overlap
-            
-        return chunks
-
-        if current_chunk:
-            chunks.append("\n\n".join(current_chunk))
 
         return chunks
 

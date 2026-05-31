@@ -737,7 +737,7 @@ async def run_executor_cycle(
             if isinstance(action, str):
                 try:
                     action = json.loads(action)
-                except:
+                except (json.JSONDecodeError, TypeError):
                     action = {"tool": str(action)}
             
             # Add execution step to graph
@@ -835,7 +835,7 @@ async def run_executor_cycle(
                                 feedback = f"- Step {step_id} (Tool: {tool_name}) failed: {data.get('message')} -> {data.get('fix_suggestion')}"
                                 correction_feedback.append(feedback)
                                 step_status = "failed"
-                    except:
+                    except (json.JSONDecodeError, TypeError):
                         pass
 
                 # Truncation logic
@@ -888,7 +888,7 @@ async def run_executor_cycle(
                         "timestamp": time.time(),
                     }
                     await broker.emit("execution.step.completed", run_log_entry, op_id=os.path.basename(log_dir) if log_dir else None)
-                except:
+                except Exception:
                     pass
 
             # Handle immediate corrections

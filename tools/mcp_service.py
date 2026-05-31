@@ -25,8 +25,12 @@ import logging
 import signal
 import tempfile
 import textwrap
-from typing import Dict, Any, List
-from http.server import BaseHTTPRequestHandler
+import random
+import socket
+import uuid
+from datetime import datetime
+from typing import Dict, Any, List, Optional
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import sys
 import os
 import threading
@@ -1357,7 +1361,7 @@ async def concurrency_test(
         if isinstance(req_data, str):
              try:
                  req_data = json.loads(req_data)
-             except:
+             except (json.JSONDecodeError, TypeError):
                  pass # Treat as raw string
     except Exception:
         req_data = data # Treat as raw string
@@ -1949,8 +1953,9 @@ async def _search_exploitdb(keywords: str, cve_id: str, max_results: int) -> Lis
             # 分割关键词
             search_args = ["searchsploit", "-j"] + keywords.split()
         
-        # 执行命令
-        result = subprocess.run(
+        # 执行命令 (offload 阻塞调用到线程, 避免卡死事件循环)
+        result = await asyncio.to_thread(
+            subprocess.run,
             search_args,
             capture_output=True,
             text=True,
@@ -2083,8 +2088,9 @@ async def view_exploit(
     
     try:
         if edb_id:
-            # 使用 searchsploit -p 获取路径信息
-            path_result = subprocess.run(
+            # 使用 searchsploit -p 获取路径信息 (offload 阻塞调用到线程)
+            path_result = await asyncio.to_thread(
+                subprocess.run,
                 ["searchsploit", "-p", str(edb_id)],
                 capture_output=True,
                 text=True,
