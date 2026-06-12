@@ -32,7 +32,12 @@ const causalColors = {
 const PHASE_BANNER_DEFAULT_BG = 'rgba(59, 130, 246, 0.95)';
 const PHASE_BANNER_SUCCESS_BG = 'linear-gradient(90deg, rgba(16, 185, 129, 0.9), rgba(5, 150, 105, 0.9))';
 const PHASE_BANNER_ABORTED_BG = 'rgba(239, 68, 68, 0.95)';
-let state = { op_id: new URLSearchParams(location.search).get('op_id') || '', view: 'exec', simulation: null, svg: null, g: null, zoom: null, es: null, processedEvents: new Set(), pendingReq: null, isModifyMode: false, currentPhase: null, missionAccomplished: false, isAborted: false, taskStatus: null, userHasInteracted: false, lastActiveNodeId: null, isProgrammaticZoom: false, renderDebounceTimer: null, lastRenderTime: 0, isLoadingHistory: false, collapsedNodes: new Set(), userExpandedNodes: new Set(), leftSidebarCollapsed: false, rightSidebarCollapsed: false };
+const EVENT_HISTORY_LIMIT = 300;
+const MAX_LOG_DOM_NODES = 360;
+const MAX_PROCESSED_EVENTS = 1200;
+const MAX_HIGHLIGHT_CHARS = 12000;
+const GRAPH_RENDER_DEBOUNCE_MS = 200;
+let state = { op_id: new URLSearchParams(location.search).get('op_id') || '', view: 'exec', simulation: null, svg: null, g: null, zoom: null, es: null, processedEvents: new Set(), processedEventOrder: [], pendingReq: null, isModifyMode: false, currentPhase: null, missionAccomplished: false, isAborted: false, taskStatus: null, userHasInteracted: false, lastActiveNodeId: null, isProgrammaticZoom: false, renderDebounceTimer: null, lastRenderTime: 0, isLoadingHistory: false, collapsedNodes: new Set(), userExpandedNodes: new Set(), leftSidebarCollapsed: false, rightSidebarCollapsed: false };
 const api = (p, b) => fetch(p + (p.includes('?') ? '&' : '?') + `op_id=${state.op_id}`, b ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) } : {}).then(r => r.json());
 
 // 显示阶段横幅
@@ -311,6 +316,7 @@ function selectOp(id, refresh = true) {
   history.replaceState(null, '', `?op_id=${id}`);
   document.getElementById('llm-stream').innerHTML = '';
   state.processedEvents.clear(); // [Fix] Clear processed events history so they can be re-rendered
+  state.processedEventOrder = [];
   state.missionAccomplished = false; // [Fix] Reset mission status when switching tasks
 
   // 切换任务时，从侧边栏读取该任务的状态，以防刷新后丢失终止标志
@@ -2003,9 +2009,46 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 function subscribe() {
-  state.es = new EventSource(`/api/events?op_id=${state.op_id}`);
+  const opId = state.op_id;
+  state.isLoadingHistory = true;
+
+  fetch(`/api/ops/${opId}/llm-events?limit=${EVENT_HISTORY_LIMIT}`)
+    .then(r => r.json())
+    .then(async d => {
+      if (state.op_id !== opId) return;
+      const events = d.events || [];
+      const historyRendered = await renderHistoryEvents(events, opId);
+      if (!historyRendered) return;
+      const lastEventId = events.length > 0 ? events[events.length - 1].id : 0;
+      openEventStream(opId, lastEventId);
+    })
+    .catch(err => {
+      console.error('Failed to load event history', err);
+      if (state.op_id === opId) openEventStream(opId, 0);
+    })
+    .finally(() => {
+      if (state.op_id === opId) state.isLoadingHistory = false;
+    });
+}
+
+async function renderHistoryEvents(events, opId) {
+  const batchSize = 25;
+  for (let start = 0; start < events.length; start += batchSize) {
+    if (state.op_id !== opId) return false;
+    events.slice(start, start + batchSize).forEach(e => {
+      if (e.event && e.event.startsWith('llm.')) renderLLMResponse(e, true); else renderSystemEvent(e);
+    });
+    await new Promise(resolve => requestAnimationFrame(resolve));
+  }
+  return state.op_id === opId;
+}
+
+function openEventStream(opId, afterId) {
+  if (state.op_id !== opId) return;
+  state.es = new EventSource(`/api/events?op_id=${encodeURIComponent(opId)}&after_id=${afterId || 0}`);
   state.es.onmessage = e => {
     try {
+      if (state.op_id !== opId) return;
       const msg = JSON.parse(e.data);
 
       // 统一处理所有事件
@@ -2014,7 +2057,7 @@ function subscribe() {
       // 对于已完成的任务，跳过图形刷新事件（减少不必要的渲染）
       if (eventType === 'graph.changed' || eventType === 'execution.step.completed') {
         if (!state.missionAccomplished) {
-          render();
+          scheduleGraphRender();
         }
       }
       if (eventType === 'ping' || eventType === 'graph.ready') return;
@@ -2027,21 +2070,38 @@ function subscribe() {
       }
     } catch (x) { console.error('Parse error', x); }
   };
-  // 加载历史事件时设置标志，避免 phase banner 闪烁
-  fetch(`/api/ops/${state.op_id}/llm-events`).then(r => r.json()).then(d => {
-    state.isLoadingHistory = true;
-    (d.events || []).forEach(e => {
-      if (e.event && e.event.startsWith('llm.')) renderLLMResponse(e, true); else renderSystemEvent(e);
-    });
-    state.isLoadingHistory = false;
-  });
+}
+
+function scheduleGraphRender() {
+  if (state.renderDebounceTimer) clearTimeout(state.renderDebounceTimer);
+  state.renderDebounceTimer = setTimeout(() => {
+    state.renderDebounceTimer = null;
+    render();
+  }, GRAPH_RENDER_DEBOUNCE_MS);
+}
+
+function rememberProcessedEvent(msg) {
+  const id = msg.id != null ? `log_${msg.id}` : `${msg.timestamp || 0}_${msg.event}`;
+  if (state.processedEvents.has(id)) return false;
+
+  state.processedEvents.add(id);
+  state.processedEventOrder.push(id);
+  while (state.processedEventOrder.length > MAX_PROCESSED_EVENTS) {
+    state.processedEvents.delete(state.processedEventOrder.shift());
+  }
+  return true;
+}
+
+function appendLogNode(container, node) {
+  container.appendChild(node);
+  while (container.children.length > MAX_LOG_DOM_NODES) {
+    container.firstElementChild.remove();
+  }
 }
 
 // 专门处理系统/执行事件 (execution.step.completed, graph.changed, etc)
 function renderSystemEvent(msg) {
-  const id = (msg.timestamp || 0) + '_' + msg.event;
-  if (state.processedEvents.has(id)) return;
-  state.processedEvents.add(id);
+  if (!rememberProcessedEvent(msg)) return;
 
   const container = document.getElementById('llm-stream');
   const div = document.createElement('div');
@@ -2056,7 +2116,7 @@ function renderSystemEvent(msg) {
   if (eventType === 'execution.step.completed') {
     const sep = document.createElement('div');
     sep.className = 'step-separator';
-    container.appendChild(sep);
+    appendLogNode(container, sep);
   }
 
   let html = `<div class="msg-meta">
@@ -2106,15 +2166,13 @@ function renderSystemEvent(msg) {
 
   div.innerHTML = html;
   const shouldScroll = Math.abs(container.scrollHeight - container.clientHeight - container.scrollTop) < 50;
-  container.appendChild(div);
+  appendLogNode(container, div);
   if (shouldScroll) container.scrollTop = container.scrollHeight;
 }
 
 // 专门处理 LLM 响应
 function renderLLMResponse(msg, isHistory = false) {
-  const id = (msg.timestamp || Date.now()) + '_' + msg.event;
-  if (state.processedEvents.has(id)) return;
-  state.processedEvents.add(id);
+  if (!rememberProcessedEvent(msg)) return;
 
   if (msg.event && msg.event.includes('request')) return;
 
@@ -2152,10 +2210,9 @@ function renderLLMResponse(msg, isHistory = false) {
 
   // 检测全局任务完成
   let missionFlag = false;
-  const msgContentStr = JSON.stringify(msg).toLowerCase();
   if ((data && data.global_mission_accomplished === true) ||
     (data.data && data.data.global_mission_accomplished === true) ||
-    (msgContentStr.includes('global_mission_accomplished') && msgContentStr.includes('true'))) {
+    containsMissionAccomplished(data)) {
     missionFlag = true;
   }
 
@@ -2204,10 +2261,10 @@ function renderLLMResponse(msg, isHistory = false) {
       let thoughtText = '';
       if (typeof remaining.thought === 'object') {
         for (const [key, val] of Object.entries(remaining.thought)) {
-          if (typeof val === 'string') thoughtText += `<div style="margin-bottom:6px;"><span class="detail-key">${escapeHtml(key.replace(/_/g, ' '))}:</span> <span style="color:#e2e8f0">${escapeHtml(val)}</span></div>`;
+          if (typeof val === 'string') thoughtText += `<div style="margin-bottom:6px;"><span class="detail-key">${escapeHtml(key.replace(/_/g, ' '))}:</span> <span style="color:#e2e8f0">${escapeHtml(truncateForDisplay(val))}</span></div>`;
         }
       } else {
-        thoughtText = `<div style="color:#e2e8f0">${escapeHtml(String(remaining.thought))}</div>`;
+        thoughtText = `<div style="color:#e2e8f0">${escapeHtml(truncateForDisplay(remaining.thought))}</div>`;
       }
       htmlContent += `<div class="thought-card">${thoughtText}</div>`;
       delete remaining.thought;
@@ -2222,7 +2279,7 @@ function renderLLMResponse(msg, isHistory = false) {
         : (normalizedAuditStatus === 'failed' ? '#ef4444' : '#f59e0b');
       htmlContent += `<div class="thought-card" style="border-left-color:${statusColor}">
               <div class="thought-title" style="color:${statusColor}">Audit: ${escapeHtml(audit.status.toUpperCase())}</div>
-              <div style="margin-bottom:6px;">${escapeHtml(audit.completion_check || '')}</div>
+              <div style="margin-bottom:6px;">${escapeHtml(truncateForDisplay(audit.completion_check || ''))}</div>
           </div>`;
       delete remaining.audit_result;
     }
@@ -2249,7 +2306,7 @@ function renderLLMResponse(msg, isHistory = false) {
       let detailsHtml = '';
       remaining.execution_operations.forEach(op => {
         const toolName = op.action ? op.action.tool : 'Unknown';
-        detailsHtml += `<div class="op-item"><span style="color:#f59e0b">🔧 ${toolName}</span> <span style="color:#94a3b8">${op.thought || ''}</span></div>`;
+        detailsHtml += `<div class="op-item"><span style="color:#f59e0b">🔧 ${escapeHtml(toolName)}</span> <span style="color:#94a3b8">${escapeHtml(truncateForDisplay(op.thought || ''))}</span></div>`;
       });
       htmlContent += `
           <div class="log-group open">
@@ -2269,33 +2326,66 @@ function renderLLMResponse(msg, isHistory = false) {
       htmlContent += `
           <div class="log-group">
               <div class="log-summary" onclick="this.parentElement.classList.toggle('open')">Other Data</div>
-              <div class="log-details"><div class="raw-data-content">${hlJson(JSON.stringify(remaining, null, 2))}</div></div>
+              <div class="log-details"><div class="raw-data-content">${hlJson(remaining)}</div></div>
           </div>`;
     }
 
   } else {
     // Give plain text responses a text box similar to object attributes
-    htmlContent += `<div class="thought-card" style="white-space:pre-wrap;color:#e2e8f0;">${escapeHtml(content)}</div>`;
+    htmlContent += `<div class="thought-card" style="white-space:pre-wrap;color:#e2e8f0;">${escapeHtml(truncateForDisplay(content))}</div>`;
   }
 
   div.innerHTML = htmlContent;
 
   const shouldScroll = Math.abs(container.scrollHeight - container.clientHeight - container.scrollTop) < 50;
-  container.appendChild(div);
+  appendLogNode(container, div);
   if (shouldScroll) container.scrollTop = container.scrollHeight;
 }
 
 function hlJson(s) {
   if (typeof s !== 'string') {
-    if (typeof s === 'object') s = JSON.stringify(s, null, 2);
+    if (typeof s === 'object') s = safeStringifyForDisplay(s);
     else s = String(s);
   }
+  s = truncateForDisplay(s);
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/("(\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, m => {
     let c = 'json-number';
     if (/^"/.test(m)) c = /:$/.test(m) ? 'json-key' : 'json-string';
     else if (/true|false/.test(m)) c = 'json-boolean';
     return `<span class="${c}">${m}</span>`;
   });
+}
+
+function truncateForDisplay(value) {
+  const text = value == null ? '' : String(value);
+  if (text.length <= MAX_HIGHLIGHT_CHARS) return text;
+
+  const omitted = text.length - MAX_HIGHLIGHT_CHARS;
+  return `${text.slice(0, MAX_HIGHLIGHT_CHARS)}\n\n... [truncated ${omitted.toLocaleString()} characters in Web UI]`;
+}
+
+function safeStringifyForDisplay(value) {
+  const seen = new WeakSet();
+  return JSON.stringify(value, (key, item) => {
+    if (typeof item === 'string') return truncateForDisplay(item);
+    if (item && typeof item === 'object') {
+      if (seen.has(item)) return '[Circular]';
+      seen.add(item);
+      if (Array.isArray(item) && item.length > 100) {
+        return [...item.slice(0, 100), `... [truncated ${item.length - 100} array items in Web UI]`];
+      }
+    }
+    return item;
+  }, 2);
+}
+
+function containsMissionAccomplished(value, depth = 0) {
+  if (!value || typeof value !== 'object' || depth > 6) return false;
+  for (const [key, item] of Object.entries(value)) {
+    if (key === 'global_mission_accomplished' && item === true) return true;
+    if (item && typeof item === 'object' && containsMissionAccomplished(item, depth + 1)) return true;
+  }
+  return false;
 }
 
 // HTML 转义辅助函数

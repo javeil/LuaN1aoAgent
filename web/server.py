@@ -29,6 +29,9 @@ from core.intervention import intervention_manager  # Added this line
 
 # 配置 SSE 日志
 _sse_logger = logging.getLogger("web.sse")
+DEFAULT_EVENT_HISTORY_LIMIT = 300
+MAX_EVENT_HISTORY_LIMIT = 1000
+SSE_EVENT_BATCH_SIZE = 250
 
 # 进程跟踪字典: {op_id -> subprocess.Popen}
 # 用于在终止任务时直接kill进程
@@ -356,20 +359,33 @@ async def api_tree_execution(op_id: str):
     return {"roots": []} # Simplified for now
 
 @app.get("/api/ops/{op_id}/llm-events")
-async def api_llm_events(op_id: str):
+async def api_llm_events(op_id: str, limit: int = DEFAULT_EVENT_HISTORY_LIMIT):
     """
-    Fetch event history. 
-    Note: Despite the name, this now returns ALL events, not just llm.*, 
-    to ensure the frontend renders the full history (including system events) on load.
+    Fetch a bounded recent event history.
+    Despite the legacy route name, this includes system events as well as LLM events.
     """
+    limit = max(1, min(limit, MAX_EVENT_HISTORY_LIMIT))
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(EventLogModel)
             .where(EventLogModel.session_id == op_id)
-            .order_by(EventLogModel.timestamp)
+            .order_by(EventLogModel.id.desc())
+            .limit(limit)
         )
-        events = result.scalars().all()
-        return {"op_id": op_id, "events": [{"event": e.event_type, "data": e.content, "timestamp": e.timestamp.timestamp()} for e in events], "count": len(events)}
+        events = list(reversed(result.scalars().all()))
+        return {
+            "op_id": op_id,
+            "events": [
+                {
+                    "id": e.id,
+                    "event": e.event_type,
+                    "data": e.content,
+                    "timestamp": e.timestamp.timestamp(),
+                }
+                for e in events
+            ],
+            "count": len(events),
+        }
 
 @app.get("/api/ops/{op_id}/intervention/pending")
 async def api_get_pending_intervention(op_id: str):
@@ -526,47 +542,58 @@ async def api_ops_delete(op_id: str):
     return {"ok": True}
 
 @app.get("/api/events")
-async def api_events(request: Request, op_id: str):
+async def api_events(request: Request, op_id: str, after_id: int = 0):
     """
     SSE Endpoint: Polls DB for new events for the given op_id, including graph updates,
     event logs, and intervention requests.
     """
+    try:
+        reconnect_id = int(request.headers.get("last-event-id", "0"))
+    except (TypeError, ValueError):
+        reconnect_id = 0
+
     async def event_generator():
         last_graph_update_time = time.time() - 60 # Look back 60s for initial graph status
-        last_event_log_id = 0  # Use ID for incremental fetching
+        last_event_log_id = max(0, after_id, reconnect_id)  # Use ID for incremental fetching
         last_intervention_check_time = time.time() - 60 # Look back 60s for initial interventions
 
         # Initial graph ready event
         yield {
             "event": "message",
-            "id": str(time.time()),
             "data": json.dumps({"event": "graph.ready", "op_id": op_id})
         }
 
-        # Initial events load
+        # Initial events load. Normal frontend connections pass after_id after
+        # fetching bounded history, while direct SSE clients receive a bounded
+        # recent window instead of replaying an unbounded session.
         async with AsyncSessionLocal() as session:
-            # Send all historical events up to now, limited for performance
-            events_res = await session.execute(
-                select(EventLogModel)
-                .where(EventLogModel.session_id == op_id)
-                .order_by(EventLogModel.id) # Order by ID
-            )
-            initial_events = events_res.scalars().all()
-            for e in initial_events:
-                yield {
-                    "event": "message",
-                    "id": str(e.id), # Use event ID as SSE event ID
-                    "data": json.dumps({"event": e.event_type, "data": e.content, "timestamp": e.timestamp.timestamp()})
-                }
-            if initial_events:
-                last_event_log_id = initial_events[-1].id
+            if last_event_log_id == 0:
+                events_res = await session.execute(
+                    select(EventLogModel)
+                    .where(EventLogModel.session_id == op_id)
+                    .order_by(EventLogModel.id.desc())
+                    .limit(DEFAULT_EVENT_HISTORY_LIMIT)
+                )
+                initial_events = list(reversed(events_res.scalars().all()))
+                for e in initial_events:
+                    yield {
+                        "event": "message",
+                        "id": str(e.id),
+                        "data": json.dumps({
+                            "id": e.id,
+                            "event": e.event_type,
+                            "data": e.content,
+                            "timestamp": e.timestamp.timestamp(),
+                        })
+                    }
+                if initial_events:
+                    last_event_log_id = initial_events[-1].id
 
             # Send initial pending intervention if any
             intervention_db_model = await get_pending_intervention_request(op_id)
             if intervention_db_model:
                 yield {
                     "event": "message",
-                    "id": str(intervention_db_model.id), # Use intervention ID as SSE event ID
                     "data": json.dumps({
                         "event": "intervention.required",
                         "op_id": op_id,
@@ -601,8 +628,11 @@ async def api_events(request: Request, op_id: str):
                     if session_updated_at and session_updated_at.timestamp() > last_graph_update_time:
                         yield {
                             "event": "message",
-                            "id": str(current_time),
-                            "data": json.dumps({"event": "graph.changed", "op_id": op_id})
+                            "data": json.dumps({
+                                "event": "graph.changed",
+                                "op_id": op_id,
+                                "timestamp": current_time,
+                            })
                         }
                         last_graph_update_time = current_time
 
@@ -611,13 +641,19 @@ async def api_events(request: Request, op_id: str):
                         select(EventLogModel)
                         .where(EventLogModel.session_id == op_id, EventLogModel.id > last_event_log_id)
                         .order_by(EventLogModel.id)
+                        .limit(SSE_EVENT_BATCH_SIZE)
                     )
                     new_events = new_events_res.scalars().all()
                     for e in new_events:
                         yield {
                             "event": "message",
                             "id": str(e.id),
-                            "data": json.dumps({"event": e.event_type, "data": e.content, "timestamp": e.timestamp.timestamp()})
+                            "data": json.dumps({
+                                "id": e.id,
+                                "event": e.event_type,
+                                "data": e.content,
+                                "timestamp": e.timestamp.timestamp(),
+                            })
                         }
                         last_event_log_id = e.id # Update last_event_log_id
 
@@ -626,7 +662,6 @@ async def api_events(request: Request, op_id: str):
                     if intervention_db_model and intervention_db_model.created_at.timestamp() > last_intervention_check_time:
                         yield {
                             "event": "message",
-                            "id": str(intervention_db_model.id),
                             "data": json.dumps({
                                 "event": "intervention.required",
                                 "op_id": op_id,
@@ -644,12 +679,12 @@ async def api_events(request: Request, op_id: str):
                         last_intervention_check_time = intervention_db_model.created_at.timestamp()
 
                 # Keep connection alive with a ping, even if no new data
-                yield {"event": "ping", "id": str(current_time), "data": "{}"}
+                yield {"event": "ping", "data": "{}"}
                 await asyncio.sleep(1) # Poll every 1 second
 
             except Exception as e:
                 _sse_logger.error(f"SSE Error for {op_id}: {e}", exc_info=True)
-                yield {"event": "error", "id": str(time.time()), "data": json.dumps({"error": str(e)})}
+                yield {"event": "error", "data": json.dumps({"error": str(e)})}
                 await asyncio.sleep(5) # Wait longer on error
 
     return EventSourceResponse(event_generator())
