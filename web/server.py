@@ -32,6 +32,7 @@ _sse_logger = logging.getLogger("web.sse")
 DEFAULT_EVENT_HISTORY_LIMIT = 300
 MAX_EVENT_HISTORY_LIMIT = 1000
 SSE_EVENT_BATCH_SIZE = 250
+WEB_HIDDEN_EVENT_TYPES = ("llm.request",)
 
 # 进程跟踪字典: {op_id -> subprocess.Popen}
 # 用于在终止任务时直接kill进程
@@ -427,7 +428,10 @@ async def api_llm_events(op_id: str, limit: int = DEFAULT_EVENT_HISTORY_LIMIT):
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(EventLogModel)
-            .where(EventLogModel.session_id == op_id)
+            .where(
+                EventLogModel.session_id == op_id,
+                EventLogModel.event_type.not_in(WEB_HIDDEN_EVENT_TYPES),
+            )
             .order_by(EventLogModel.id.desc())
             .limit(limit)
         )
@@ -629,7 +633,10 @@ async def api_events(request: Request, op_id: str, after_id: int = 0):
             if last_event_log_id == 0:
                 events_res = await session.execute(
                     select(EventLogModel)
-                    .where(EventLogModel.session_id == op_id)
+                    .where(
+                        EventLogModel.session_id == op_id,
+                        EventLogModel.event_type.not_in(WEB_HIDDEN_EVENT_TYPES),
+                    )
                     .order_by(EventLogModel.id.desc())
                     .limit(DEFAULT_EVENT_HISTORY_LIMIT)
                 )
@@ -698,7 +705,11 @@ async def api_events(request: Request, op_id: str, after_id: int = 0):
                     # 2. Check for new Event Logs by ID
                     new_events_res = await session.execute(
                         select(EventLogModel)
-                        .where(EventLogModel.session_id == op_id, EventLogModel.id > last_event_log_id)
+                        .where(
+                            EventLogModel.session_id == op_id,
+                            EventLogModel.id > last_event_log_id,
+                            EventLogModel.event_type.not_in(WEB_HIDDEN_EVENT_TYPES),
+                        )
                         .order_by(EventLogModel.id)
                         .limit(SSE_EVENT_BATCH_SIZE)
                     )
