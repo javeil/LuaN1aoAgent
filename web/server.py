@@ -38,6 +38,8 @@ SSE_EVENT_BATCH_SIZE = 250
 _running_processes: dict[str, subprocess.Popen] = {}
 # 保护 _running_processes 的并发访问 (create / abort 可能并发)
 _processes_lock = asyncio.Lock()
+# Keep watcher tasks strongly referenced until each child exits.
+_process_watchers: set[asyncio.Task] = set()
 
 app = FastAPI(title="鸾鸟自主渗透系统 Web (DB Mode)")
 
@@ -76,6 +78,63 @@ templates = Jinja2Templates(directory="web/templates")
 @app.on_event("startup")
 async def startup_event():
     await init_db()
+
+
+async def _watch_agent_process(
+    op_id: str,
+    process: subprocess.Popen,
+    stdout_log,
+    stderr_log,
+) -> None:
+    """Clean up a child process and fail sessions that exit without a terminal status."""
+    return_code = await asyncio.to_thread(process.wait)
+
+    stdout_log.close()
+    stderr_log.close()
+
+    async with _processes_lock:
+        if _running_processes.get(op_id) is process:
+            _running_processes.pop(op_id, None)
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(SessionModel.status).where(SessionModel.id == op_id)
+        )
+        status = result.scalar_one_or_none()
+        if status in {"pending", "running"}:
+            await session.execute(
+                update(SessionModel)
+                .where(SessionModel.id == op_id)
+                .values(status="failed", updated_at=datetime.now())
+            )
+            await session.commit()
+            _sse_logger.error(
+                "Agent task '%s' exited with code %s while session was %s; marked failed",
+                op_id,
+                return_code,
+                status,
+            )
+        else:
+            _sse_logger.info(
+                "Agent task '%s' exited with code %s and terminal status %s",
+                op_id,
+                return_code,
+                status,
+            )
+
+
+def _track_agent_process(
+    op_id: str,
+    process: subprocess.Popen,
+    stdout_log,
+    stderr_log,
+) -> None:
+    watcher = asyncio.create_task(
+        _watch_agent_process(op_id, process, stdout_log, stderr_log)
+    )
+    _process_watchers.add(watcher)
+    watcher.add_done_callback(_process_watchers.discard)
+
 
 # --- Helper Functions for Graph Reconstruction ---
 
@@ -739,6 +798,8 @@ async def api_ops_create(payload: dict[str, Any]):
 
     # Use subprocess.Popen to start agent.py as a detached process
     # This prevents the web server from being blocked by the agent task
+    stdout_log = None
+    stderr_log = None
     try:
         # 先在数据库中创建 session 记录，这样前端刷新时能立即看到新任务
         async with AsyncSessionLocal() as session:
@@ -778,6 +839,7 @@ async def api_ops_create(payload: dict[str, Any]):
         # 保存进程引用到跟踪字典，以便后续可以直接kill
         async with _processes_lock:
             _running_processes[op_id] = process
+        _track_agent_process(op_id, process, stdout_log, stderr_log)
 
         _sse_logger.info(f"Agent task '{task_name}' (op_id: {op_id}) started with PID: {process.pid}, HITL: {human_in_the_loop}")
 
@@ -792,6 +854,17 @@ async def api_ops_create(payload: dict[str, Any]):
             }
         }
     except Exception as e:
+        if stdout_log is not None:
+            stdout_log.close()
+        if stderr_log is not None:
+            stderr_log.close()
+        async with AsyncSessionLocal() as session:
+            await session.execute(
+                update(SessionModel)
+                .where(SessionModel.id == op_id)
+                .values(status="failed", updated_at=datetime.now())
+            )
+            await session.commit()
         _sse_logger.error(f"Failed to start agent task: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to start agent task: {e}")
 
