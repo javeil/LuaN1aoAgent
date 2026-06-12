@@ -36,6 +36,7 @@ const EVENT_HISTORY_LIMIT = 300;
 const MAX_LOG_DOM_NODES = 360;
 const MAX_PROCESSED_EVENTS = 1200;
 const MAX_HIGHLIGHT_CHARS = 12000;
+const MAX_GRAPH_LABEL_CHARS = 160;
 const GRAPH_RENDER_DEBOUNCE_MS = 200;
 let state = { op_id: new URLSearchParams(location.search).get('op_id') || '', view: 'exec', simulation: null, svg: null, g: null, zoom: null, es: null, processedEvents: new Set(), processedEventOrder: [], pendingReq: null, isModifyMode: false, currentPhase: null, missionAccomplished: false, isAborted: false, taskStatus: null, userHasInteracted: false, lastActiveNodeId: null, isProgrammaticZoom: false, renderDebounceTimer: null, lastRenderTime: 0, isLoadingHistory: false, collapsedNodes: new Set(), userExpandedNodes: new Set(), leftSidebarCollapsed: false, rightSidebarCollapsed: false };
 const api = (p, b) => fetch(p + (p.includes('?') ? '&' : '?') + `op_id=${state.op_id}`, b ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) } : {}).then(r => r.json());
@@ -942,7 +943,7 @@ function drawForceGraph(data) {
     .style("font-size", "11px")
     .each(function (d) {
       const n = dagreGraph.node(d);
-      let label = n.label || n.id;
+      let label = String(n.label || n.id || '');
 
       // 如果是动作节点，提取真正的动作名称
       if (n.type === 'action' && label.includes('_')) {
@@ -963,19 +964,29 @@ function drawForceGraph(data) {
         }
       }
 
-      // 智能截断：考虑中英文字符宽度
+      // Bound the input before measuring. A task goal can contain tens of
+      // thousands of characters, and measuring after removing one character
+      // at a time blocks the browser main thread.
       const textElement = d3.select(this);
-      textElement.text(label);
+      const maxWidth = n.width - 20;
+      const candidate = label.slice(0, MAX_GRAPH_LABEL_CHARS);
+      let low = 0;
+      let high = candidate.length;
 
-      // 根据节点宽度动态设置最大文本宽度
-      const nodeWidth = n.width;
-      const maxWidth = nodeWidth - 20;  // 留出左右边距
-      let currentText = label;
-
-      while (textElement.node().getComputedTextLength() > maxWidth && currentText.length > 3) {
-        currentText = currentText.substring(0, currentText.length - 1);
-        textElement.text(currentText + '...');
+      // Binary search reduces SVG measurements from O(label length) to O(log n).
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        const suffix = middle < label.length ? '...' : '';
+        textElement.text(candidate.slice(0, middle) + suffix);
+        if (textElement.node().getComputedTextLength() <= maxWidth) {
+          low = middle;
+        } else {
+          high = middle - 1;
+        }
       }
+
+      const suffix = low < label.length ? '...' : '';
+      textElement.text(candidate.slice(0, low) + suffix);
     });
 
   // 节点副标题 (例如耗时或工具名)
